@@ -1,0 +1,194 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+:root {
+  --color-workspace-950: #0a0a0c;
+  --color-workspace-900: #121216;
+  --color-workspace-850: #181820;
+  --color-workspace-800: #202028;
+  --color-workspace-750: #2a2a35;
+  --color-workspace-700: #343444;
+  --color-workspace-600: #4e4e60;
+  --color-workspace-400: #a0a0b0;
+  --color-workspace-200: #d0d0d8;
+  --color-workspace-50: #f5f5f7;
+  --bg-reactflow: #0c0c0e;
+}
+
+.light-theme {
+  --color-workspace-950: #f1f5f9;
+  --color-workspace-900: #f8fafc;
+  --color-workspace-850: #ffffff;
+  --color-workspace-800: #ffffff;
+  --color-workspace-750: #e2e8f0;
+  --color-workspace-700: #cbd5e1;
+  --color-workspace-600: #64748b;
+  --color-workspace-400: #334155;
+  --color-workspace-200: #1e293b;
+  --color-workspace-50: #0f172a;
+  --bg-reactflow: #f1f5f9;
+}
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-workspace-950 text-workspace-50 font-sans antialiased overflow-hidden select-none;
+  }
+
+  /* Custom dark scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-workspace-950;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-workspace-750 rounded-full hover:bg-workspace-600 transition-colors;
+  }
+}
+
+/* Custom styles for React Flow Canvas in Dark Mode */
+.react-flow {
+  background-color: var(--bg-reactflow) !important;
+}
+
+.react-flow__background {
+  background-size: 24px 24px !important;
+}
+
+/* Glow lines for Lineage connections */
+.react-flow__edge-path {
+  stroke-width: 2.5;
+  stroke: #4e4e60;
+  transition: stroke 0.2s, stroke-width 0.2s;
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #00f2fe !important;
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 4px rgba(0, 242, 254, 0.6));
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: #a0a0b0;
+  stroke-width: 3.5;
+}
+
+/* Make handles larger and glowing on hover */
+.react-flow__handle {
+  background-color: var(--color-workspace-800) !important;
+  border: 2px solid var(--color-workspace-600) !important;
+  border-radius: 50% !important;
+  transition: all 0.2s ease;
+}
+
+.handle-header {
+  width: 16px !important;
+  height: 16px !important;
+}
+
+.handle-column {
+  width: 13px !important;
+  height: 13px !important;
+}
+
+.react-flow__handle:hover {
+  background-color: #00f2fe !important;
+  border-color: #00f2fe !important;
+  transform: scale(1.3);
+  box-shadow: 0 0 8px rgba(0, 242, 254, 0.8);
+}
+
+.react-flow__handle-connecting {
+  background-color: #ff5e62 !important;
+  border-color: #ff5e62 !important;
+}
+
+.react-flow__handle-valid {
+  background-color: #2bcbba !important;
+  border-color: #2bcbba !important;
+  box-shadow: 0 0 8px rgba(43, 203, 186, 0.8);
+}
+
+/* Customizing React Flow controls — uses CSS vars for theming */
+.react-flow__controls {
+  background: var(--color-workspace-850) !important;
+  border: 1px solid var(--color-workspace-750) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3) !important;
+  overflow: hidden;
+  transition: background 0.3s, border-color 0.3s;
+}
+
+.react-flow__controls-button {
+  background: var(--color-workspace-850) !important;
+  border-bottom: 1px solid var(--color-workspace-750) !important;
+  color: var(--color-workspace-400) !important;
+  fill: currentColor !important;
+  transition: all 0.15s ease !important;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-workspace-800) !important;
+  color: #00f2fe !important;
+}
+
+.react-flow__controls-button:last-child {
+  border-bottom: none !important;
+}
+
+/* React Flow MiniMap Styling */
+.react-flow__minimap {
+  background-color: var(--color-workspace-900) !important;
+  border: 1px solid var(--color-workspace-750) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3) !important;
+  transition: background 0.3s, border-color 0.3s;
+}
+
+.react-flow__minimap-mask {
+  fill: rgba(0, 0, 0, 0.35) !important;
+}
+
+.react-flow__minimap-node {
+  fill: var(--color-workspace-800) !important;
+  stroke: var(--color-workspace-700) !important;
+}
+
+/* ── Light theme specific overrides ───────────────────────────────────── */
+.light-theme .react-flow__edge-path {
+  stroke: #94a3b8;
+}
+
+.light-theme .react-flow__edge.selected .react-flow__edge-path {
+  stroke: #0891b2 !important;
+  filter: drop-shadow(0 0 4px rgba(8, 145, 178, 0.5));
+}
+
+.light-theme .react-flow__background {
+  background-color: #f1f5f9 !important;
+}
+
+/* Smooth global transitions when switching themes */
+* {
+  transition-property: background-color, border-color, color;
+  transition-duration: 200ms;
+  transition-timing-function: ease;
+}
+
+/* Custom animations */
+@keyframes pulse-glow {
+  0%, 100% {
+    box-shadow: 0 0 10px rgba(0, 242, 254, 0.2);
+  }
+  50% {
+    box-shadow: 0 0 20px rgba(0, 242, 254, 0.5);
+  }
+}
+
+.pulse-glow-teal {
+  animation: pulse-glow 3s infinite;
+}
