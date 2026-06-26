@@ -508,6 +508,7 @@ export default function App() {
       await api.createAsset({
         name: "Lineage Group",
         asset_type: "group",
+        version: 1,
         description: "Custom grouped tables",
         owner: USER_NAME,
         notes: "",
