@@ -39,3 +39,6 @@ desktop.ini
 *.njsproj
 *.sln
 *.sw?
+
+# Scratch & temporary workspace directories
+brain/
