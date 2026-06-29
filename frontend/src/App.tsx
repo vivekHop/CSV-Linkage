@@ -74,6 +74,8 @@ export default function App() {
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
+  const [wsConnected, setWsConnected] = useState(false);
 
   // Selection states
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -185,8 +187,11 @@ export default function App() {
   }, [bottomHeight]);
 
   // Load all initial workspace data
-  const loadWorkspaceData = async () => {
+  const loadWorkspaceData = async (isRetry = false) => {
     try {
+      if (!isRetry) {
+        setBackendStatus('connecting');
+      }
       const [fetchedAssets, fetchedRels, fetchedActs] = await Promise.all([
         api.getAssets(),
         api.getRelationships(),
@@ -196,10 +201,16 @@ export default function App() {
       setAssets(fetchedAssets);
       setRelationships(fetchedRels);
       setActivities(fetchedActs);
+      setBackendStatus('connected');
+      setIsLoading(false);
     } catch (err) {
       console.error('Failed to load workspace data:', err);
-    } finally {
-      setIsLoading(false);
+      setBackendStatus('error');
+      
+      // Auto-retry in 3 seconds
+      setTimeout(() => {
+        loadWorkspaceData(true);
+      }, 3000);
     }
   };
 
@@ -207,80 +218,109 @@ export default function App() {
     loadWorkspaceData();
   }, []);
 
-  // Initialize WebSockets for real-time collaboration
+  // Initialize WebSockets for real-time collaboration with auto-reconnection
   useEffect(() => {
-    const ws = new WebSocket(WS_URL);
-    wsRef.current = ws;
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+    let isUnmounted = false;
 
-    ws.onopen = () => {
-      console.log('Connected to CSV Linkage WebSocket');
+    const connect = () => {
+      if (isUnmounted) return;
+
+      console.log('Connecting to CSV Linkage WebSocket...');
+      ws = new WebSocket(WS_URL);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        if (isUnmounted) {
+          ws?.close();
+          return;
+        }
+        console.log('Connected to CSV Linkage WebSocket');
+        setWsConnected(true);
+      };
+
+      ws.onmessage = (event) => {
+        if (isUnmounted) return;
+        try {
+          const payload = JSON.parse(event.data);
+          const { event_type, data } = payload;
+
+          // Handle Figma-style collaborative cursor updates
+          if (event_type === 'cursor_move') {
+            if (data.clientId !== CLIENT_ID) {
+              setOtherCursors((prev) => ({
+                ...prev,
+                [data.clientId]: {
+                  x: data.canvasX, // absolute canvas X
+                  y: data.canvasY, // absolute canvas Y
+                  name: data.name,
+                  color: data.color,
+                  lastUpdate: Date.now(),
+                },
+              }));
+            }
+            return;
+          }
+
+          // Handle real-time node position syncing
+          if (event_type === 'node_drag') {
+            if (data.clientId !== CLIENT_ID) {
+              setNodes((nds) =>
+                nds.map((node) => {
+                  if (node.id === data.nodeId) {
+                    return { ...node, position: data.position };
+                  }
+                  return node;
+                })
+              );
+            }
+            return;
+          }
+
+          // Refresh data on CRUD events
+          if (
+            [
+              'asset_created',
+              'asset_updated',
+              'asset_deleted',
+              'column_updated',
+              'relationship_created',
+              'relationship_deleted',
+              'relationship_updated',
+            ].includes(event_type)
+          ) {
+            loadWorkspaceData(true);
+          }
+
+          // Append new activities
+          if (event_type === 'activity_logged') {
+            setActivities((prev) => [data as ActivityLog, ...prev.slice(0, 49)]);
+          }
+        } catch (err) {
+          console.error('Error parsing WebSocket message:', err);
+        }
+      };
+
+      ws.onclose = () => {
+        if (isUnmounted) return;
+        setWsConnected(false);
+        console.log('WebSocket disconnected. Reconnecting in 3s...');
+        
+        // Refresh workspace data to ensure we didn't miss updates while offline
+        loadWorkspaceData(true);
+
+        reconnectTimeout = setTimeout(() => {
+          connect();
+        }, 3000);
+      };
+
+      ws.onerror = (err) => {
+        console.error('WebSocket error:', err);
+      };
     };
 
-    ws.onmessage = (event) => {
-      const payload = JSON.parse(event.data);
-      const { event_type, data } = payload;
-
-      // Handle Figma-style collaborative cursor updates
-      if (event_type === 'cursor_move') {
-        if (data.clientId !== CLIENT_ID) {
-          setOtherCursors((prev) => ({
-            ...prev,
-            [data.clientId]: {
-              x: data.canvasX, // absolute canvas X
-              y: data.canvasY, // absolute canvas Y
-              name: data.name,
-              color: data.color,
-              lastUpdate: Date.now(),
-            },
-          }));
-        }
-        return;
-      }
-
-      // Handle real-time node position syncing
-      if (event_type === 'node_drag') {
-        if (data.clientId !== CLIENT_ID) {
-          setNodes((nds) =>
-            nds.map((node) => {
-              if (node.id === data.nodeId) {
-                return { ...node, position: data.position };
-              }
-              return node;
-            })
-          );
-        }
-        return;
-      }
-
-      // Refresh data on CRUD events
-      if (
-        [
-          'asset_created',
-          'asset_updated',
-          'asset_deleted',
-          'column_updated',
-          'relationship_created',
-          'relationship_deleted',
-          'relationship_updated',
-        ].includes(event_type)
-      ) {
-        loadWorkspaceData();
-      }
-
-      // Append new activities
-      if (event_type === 'activity_logged') {
-        setActivities((prev) => [data as ActivityLog, ...prev.slice(0, 49)]);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket disconnected. Reconnecting in 3s...');
-      setTimeout(() => {
-        if (wsRef.current?.readyState === WebSocket.CLOSED) {
-          loadWorkspaceData();
-        }
-      }, 3000);
-    };
+    connect();
 
     // Periodically clean stale cursors
     const interval = setInterval(() => {
@@ -299,7 +339,13 @@ export default function App() {
     }, 2000);
 
     return () => {
-      ws.close();
+      isUnmounted = true;
+      if (ws) {
+        ws.close();
+      }
+      if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+      }
       clearInterval(interval);
     };
   }, []);
@@ -1306,8 +1352,24 @@ export default function App() {
         {/* Workspace Canvas Header */}
         <header className="h-14 border-b border-workspace-750 bg-workspace-850 px-6 flex items-center justify-between z-10 select-none shrink-0">
           <div className="flex items-center space-x-2.5">
-            <span className="w-2 h-2 rounded-full bg-brand-emerald animate-ping" />
-            <span className="text-xs font-semibold text-workspace-200">Shared Studio Session</span>
+            {backendStatus === 'connected' ? (
+              <>
+                <span className={`w-2 h-2 rounded-full bg-brand-emerald ${wsConnected ? 'animate-ping' : 'animate-pulse'}`} />
+                <span className="text-xs font-semibold text-workspace-200 font-mono">
+                  {wsConnected ? 'Shared Studio Session (Live)' : 'Shared Studio Session (Connecting sync...)'}
+                </span>
+              </>
+            ) : backendStatus === 'connecting' ? (
+              <>
+                <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
+                <span className="text-xs font-semibold text-workspace-300 font-mono">Connecting to backend...</span>
+              </>
+            ) : (
+              <>
+                <span className="w-2 h-2 rounded-full bg-brand-coral animate-pulse" />
+                <span className="text-xs font-semibold text-brand-coral font-mono">Offline (Retrying connection...)</span>
+              </>
+            )}
           </div>
           <div className="flex items-center space-x-4">
             {/* Active User Badges */}
@@ -1337,9 +1399,21 @@ export default function App() {
         >
           {isLoading && assets.length === 0 ? (
             <div className="absolute inset-0 flex items-center justify-center bg-workspace-950 z-20">
-              <div className="flex flex-col items-center space-y-3">
-                <Loader2 className="animate-spin text-brand-teal" size={36} />
-                <span className="text-sm text-workspace-400 font-mono">Loading lineage workspace...</span>
+              <div className="flex flex-col items-center space-y-4 max-w-md text-center px-6">
+                <Loader2 className="animate-spin text-brand-teal" size={40} />
+                <span className="text-base text-workspace-200 font-semibold font-mono">Loading Lineage Workspace</span>
+                {backendStatus === 'error' ? (
+                  <div className="space-y-2">
+                    <p className="text-xs text-brand-coral font-mono animate-pulse">
+                      Connection to server failed. Retrying...
+                    </p>
+                    <p className="text-[11px] text-workspace-400 leading-relaxed font-mono">
+                      This usually happens during database wake-up (Neon serverless cold start). The application will load automatically once the server is ready.
+                    </p>
+                  </div>
+                ) : (
+                  <span className="text-xs text-workspace-400 font-mono">Connecting to backend services...</span>
+                )}
               </div>
             </div>
           ) : null}
