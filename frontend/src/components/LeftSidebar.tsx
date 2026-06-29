@@ -69,6 +69,19 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   // Handle CSV file upload
   const handleFileUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
+
+    // Filter files to only Excel workbooks
+    const allowedExtensions = ['.xlsx', '.xls', '.xlsm'];
+    const invalidFiles = Array.from(files).filter(file => {
+      const ext = file.name.substring(file.name.lastIndexOf('.')).toLowerCase();
+      return !allowedExtensions.includes(ext);
+    });
+
+    if (invalidFiles.length > 0) {
+      setUploadError('Only Excel workbooks (.xlsx, .xls, .xlsm) are allowed.');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+      return;
+    }
     
     setIsUploading(true);
     setUploadError(null);
@@ -77,7 +90,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
       onRefreshAssets();
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err: any) {
-      setUploadError(err.message || 'Failed to upload and profile CSVs.');
+      setUploadError(err.message || 'Failed to upload and profile Excel workbook.');
     } finally {
       setIsUploading(false);
     }
@@ -133,7 +146,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             ref={fileInputRef}
             onChange={(e) => handleFileUpload(e.target.files)}
             className="hidden"
-            accept=".csv,.xlsx,.xls,.tsv,.txt,.ods"
+            accept=".xlsx,.xls,.xlsm"
             multiple
           />
           {isUploading ? (
@@ -144,8 +157,8 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           ) : (
             <div className="flex flex-col items-center text-center space-y-1">
               <Upload className="text-brand-teal mb-1" size={20} />
-              <span className="text-xs font-semibold text-workspace-200">Drag & Drop spreadsheets / CSVs</span>
-              <span className="text-[9px] text-workspace-600">Accepts CSV, Excel (multiple tabs), TSV, ODS</span>
+              <span className="text-xs font-semibold text-workspace-200">Drag & Drop Excel workbooks</span>
+              <span className="text-[9px] text-workspace-600">Accepts Excel workbooks (.xlsx, .xls, .xlsm)</span>
             </div>
           )}
         </div>

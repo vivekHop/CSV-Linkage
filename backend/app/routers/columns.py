@@ -40,3 +40,16 @@ async def update_column(column_id: str, column_update: ColumnUpdate, db: Session
     await manager.broadcast({"event_type": "column_updated", "data": {"id": column_id}})
     
     return updated_column
+
+@router.delete("/{column_id}")
+async def delete_column(column_id: str, db: Session = Depends(get_db)):
+    """
+    Deletes a column, its metadata, and all active lineage relationships connected to it.
+    """
+    success = ColumnRepository(db).delete(column_id)
+    if not success:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Column with ID '{column_id}' not found."
+        )
+    return {"status": "success", "message": f"Column '{column_id}' successfully deleted."}

@@ -112,9 +112,13 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                         </td>
                         <td className="py-2.5 pr-4">
                           <div className="flex items-center space-x-1.5">
-                            <span className={`px-2 py-0.5 rounded border text-[9px] font-mono font-bold tracking-wide ${getRelationshipBadgeColor(rel.relationship_type)}`}>
-                              {rel.relationship_type}
-                            </span>
+                            {rel.relationship_type && rel.relationship_type !== 'MAPS_TO' ? (
+                              <span className={`px-2 py-0.5 rounded border text-[9px] font-mono font-bold tracking-wide ${getRelationshipBadgeColor(rel.relationship_type)}`}>
+                                {rel.relationship_type}
+                              </span>
+                            ) : (
+                              <span className="text-[10px] text-workspace-600 font-mono italic">-</span>
+                            )}
                             <ArrowRight size={10} className="text-workspace-600" />
                           </div>
                         </td>

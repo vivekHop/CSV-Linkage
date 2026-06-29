@@ -1372,6 +1372,34 @@ export default function App() {
     }
   };
 
+  // Delete column handler
+  const handleDeleteColumn = async (columnId: string) => {
+    let colName = 'Column';
+    let assetName = '';
+    for (const a of assets) {
+      const col = a.columns?.find((c) => c.id === columnId);
+      if (col) {
+        colName = col.name;
+        assetName = a.name;
+        break;
+      }
+    }
+    const displayName = assetName ? `${assetName}.${colName}` : colName;
+
+    if (confirm(`Are you sure you want to delete column '${displayName}'? All associated lineage connections will be removed.`)) {
+      saveUndoState();
+      try {
+        await api.deleteColumn(columnId);
+        if (selectedColumnId === columnId) {
+          setSelectedColumnId(null);
+        }
+        loadWorkspaceData();
+      } catch (err) {
+        console.error('Failed to delete column:', err);
+      }
+    }
+  };
+
   // Metadata Updates (keeps position intact while editing descriptions/notes/properties)
   const handleUpdateAsset = async (assetId: string, updates: Partial<Asset>) => {
     try {
@@ -1837,6 +1865,8 @@ export default function App() {
           onUpdateAsset={handleUpdateAsset}
           onUpdateColumn={handleUpdateColumn}
           onUpdateRelationship={handleUpdateRelationship}
+          onDeleteAsset={handleDeleteAsset}
+          onDeleteColumn={handleDeleteColumn}
           selectedEdgeId={selectedEdgeId}
           relationships={relationships}
           assets={assets}

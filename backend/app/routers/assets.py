@@ -23,13 +23,13 @@ async def upload_spreadsheet_files(files: List[UploadFile] = File(...), db: Sess
     column_repo = ColumnRepository(db)
     created_assets = []
 
-    allowed_extensions = (".csv", ".tsv", ".txt", ".xlsx", ".xls", ".xlsm", ".ods")
+    allowed_extensions = (".xlsx", ".xls", ".xlsm")
 
     for file in files:
         if not file.filename.lower().endswith(allowed_extensions):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"File '{file.filename}' is not a supported spreadsheet format."
+                detail=f"File '{file.filename}' is not a supported Excel workbook format (.xlsx, .xls, .xlsm)."
             )
         
         try:

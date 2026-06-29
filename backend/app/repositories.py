@@ -283,6 +283,46 @@ class ColumnRepository(BaseRepository):
         
         return db_col
 
+    def delete(self, column_id: str) -> bool:
+        db_col = self.get_by_id(column_id)
+        if not db_col:
+            return False
+            
+        column_name = db_col.name
+        asset_name = db_col.asset.name
+        asset_id = db_col.asset_id
+        
+        # Delete related relationships first
+        self.db.query(RelationshipModel).filter(
+            or_(
+                and_(RelationshipModel.source_node_type == "column", RelationshipModel.source_node_id == column_id),
+                and_(RelationshipModel.destination_node_type == "column", RelationshipModel.destination_node_id == column_id)
+            )
+        ).delete(synchronize_session=False)
+        
+        self.db.delete(db_col)
+        self.db.commit()
+        
+        # Trigger Asset version update
+        asset_repo = AssetRepository(self.db)
+        asset = asset_repo.get_by_id(asset_id)
+        if asset:
+            # Update column count
+            new_col_count = max(0, (asset.column_count or len(asset.columns)) - 1)
+            asset_repo.update(asset_id, {"column_count": new_col_count})
+
+        # Log Activity
+        self.log_activity("column_deleted", f"Deleted column '{column_name}' from CSV asset '{asset_name}'.", asset_id)
+        
+        # Broadcast via WebSockets
+        self._trigger_broadcast("column_deleted", {
+            "id": column_id,
+            "asset_id": asset_id,
+            "name": column_name
+        })
+        
+        return True
+
     def log_activity(self, activity_type: str, details: str, asset_id: Optional[str] = None):
         activity = ActivityLog(
             activity_type=activity_type,

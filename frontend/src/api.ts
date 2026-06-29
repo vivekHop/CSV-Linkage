@@ -81,6 +81,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(updates),
     }),
+    
+  deleteColumn: (id: string) =>
+    request<{ status: string; message: string }>(`/columns/${id}`, {
+      method: 'DELETE',
+    }),
 
   // Relationships (Lineage)
   getRelationships: () => request<Relationship[]>('/relationships'),

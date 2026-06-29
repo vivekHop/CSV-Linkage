@@ -9,6 +9,8 @@ interface RightSidebarProps {
   onUpdateAsset: (assetId: string, updates: Partial<Asset>) => void;
   onUpdateColumn: (columnId: string, updates: Partial<Column>) => void;
   onUpdateRelationship?: (relId: string, updates: Partial<Relationship>) => void;
+  onDeleteAsset?: (assetId: string) => void;
+  onDeleteColumn?: (columnId: string) => void;
   
   // Edge Selection properties
   selectedEdgeId?: string | null;
@@ -24,6 +26,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onUpdateAsset,
   onUpdateColumn,
   onUpdateRelationship,
+  onDeleteAsset,
+  onDeleteColumn,
   selectedEdgeId,
   relationships = [],
   assets = [],
@@ -397,31 +401,54 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   return (
     <aside className="w-full h-full bg-workspace-850 border-l border-workspace-750 flex flex-col z-10 select-none overflow-hidden">
       {/* Selection Header */}
-      <div className="px-5 py-4 border-b border-workspace-750 flex items-center space-x-3 shrink-0">
-        {selectedAsset && !selectedColumn ? (
-          <>
-            <div className="p-2 bg-brand-teal/10 rounded-lg text-brand-teal">
-              <FileSpreadsheet size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-workspace-50 truncate" title={selectedAsset.name}>
-                {selectedAsset.name}
-              </h3>
-              <p className="text-[10px] text-workspace-400 font-mono">v{selectedAsset.version} • CSV File Metadata</p>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="p-2 bg-brand-violet/10 rounded-lg text-brand-violet">
-              <Columns size={16} />
-            </div>
-            <div className="min-w-0">
-              <h3 className="text-sm font-semibold text-workspace-50 truncate" title={selectedColumn?.name}>
-                {selectedColumn?.name}
-              </h3>
-              <p className="text-[10px] text-workspace-400 font-mono">Column • {selectedColumn?.datatype}</p>
-            </div>
-          </>
+      <div className="px-5 py-4 border-b border-workspace-750 flex items-center justify-between shrink-0">
+        <div className="flex items-center space-x-3 min-w-0 flex-1">
+          {selectedAsset && !selectedColumn ? (
+            <>
+              <div className="p-2 bg-brand-teal/10 rounded-lg text-brand-teal shrink-0">
+                <FileSpreadsheet size={16} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-workspace-50 truncate" title={selectedAsset.name}>
+                  {selectedAsset.name}
+                </h3>
+                <p className="text-[10px] text-workspace-400 font-mono">v{selectedAsset.version} • CSV File Metadata</p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="p-2 bg-brand-violet/10 rounded-lg text-brand-violet shrink-0">
+                <Columns size={16} />
+              </div>
+              <div className="min-w-0">
+                <h3 className="text-sm font-semibold text-workspace-50 truncate" title={selectedColumn?.name}>
+                  {selectedColumn?.name}
+                </h3>
+                <p className="text-[10px] text-workspace-400 font-mono">Column • {selectedColumn?.datatype}</p>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Delete button (Table / Column) */}
+        {selectedAsset && !selectedColumn && onDeleteAsset && (
+          <button
+            onClick={() => onDeleteAsset(selectedAsset.id)}
+            className="p-1.5 bg-brand-coral/10 hover:bg-brand-coral text-brand-coral hover:text-workspace-950 border border-brand-coral/20 rounded-lg font-semibold transition-all cursor-pointer shrink-0 ml-2"
+            title="Delete table metadata"
+          >
+            <Trash2 size={13} />
+          </button>
+        )}
+
+        {selectedColumn && onDeleteColumn && (
+          <button
+            onClick={() => onDeleteColumn(selectedColumn.id)}
+            className="p-1.5 bg-brand-coral/10 hover:bg-brand-coral text-brand-coral hover:text-workspace-950 border border-brand-coral/20 rounded-lg font-semibold transition-all cursor-pointer shrink-0 ml-2"
+            title="Delete column metadata"
+          >
+            <Trash2 size={13} />
+          </button>
         )}
       </div>
 
