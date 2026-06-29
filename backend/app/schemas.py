@@ -189,3 +189,18 @@ class RelationshipSyncSchema(BaseModel):
 class WorkspaceSync(BaseModel):
     assets: List[AssetSyncSchema]
     relationships: List[RelationshipSyncSchema]
+
+# --- Draft Schemas ---
+class ImportDraftCreate(BaseModel):
+    name: str
+    draft_json: Dict[str, Any]
+
+class ImportDraftResponse(BaseModel):
+    id: str
+    name: str
+    draft_json: Dict[str, Any]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True

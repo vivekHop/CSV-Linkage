@@ -19,9 +19,10 @@ export const LineageEdge: React.FC<EdgeProps> = ({
 }) => {
   const reactFlow = useReactFlow();
   
+  const isHighlighted = selected || !!data?.isHighlighted;
   const strokeColor = (style.stroke as string) || '#606070';
-  const strokeWidth = selected ? 3.5 : (style.strokeWidth as number || 1.8);
-  const opacity = selected ? 1 : (style.opacity as number ?? 0.82);
+  const strokeWidth = isHighlighted ? 3.5 : (style.strokeWidth as number || 1.8);
+  const opacity = isHighlighted ? 1.0 : (style.opacity as number ?? 0.82);
 
   let edgePath = '';
   let midX = 0;
@@ -72,8 +73,8 @@ export const LineageEdge: React.FC<EdgeProps> = ({
 
   return (
     <>
-      {/* Glow halo when selected */}
-      {selected && (
+      {/* Glow halo when selected or highlighted */}
+      {isHighlighted && (
         <path
           d={edgePath}
           fill="none"

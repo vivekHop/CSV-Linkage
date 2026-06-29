@@ -1,4 +1,4 @@
-import type { Asset, Column, Relationship, VersionHistory, ActivityLog, SearchResponse } from './types';
+import type { Asset, Column, Relationship, VersionHistory, ActivityLog, SearchResponse, ImportDraft } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
@@ -118,5 +118,45 @@ export const api = {
     request<{ status: string; message: string }>('/assets/sync', {
       method: 'POST',
       body: JSON.stringify(payload),
+    }),
+
+  // Import Preview & Finalize
+  profilePreview: async (files: FileList | File[]): Promise<{ assets: any[]; relationships: any[] }> => {
+    const formData = new FormData();
+    for (let i = 0; i < files.length; i++) {
+      formData.append('files', files[i]);
+    }
+    
+    const res = await fetch(`${API_URL}/assets/profile-preview`, {
+      method: 'POST',
+      body: formData,
+    });
+    
+    if (!res.ok) {
+      const errorBody = await res.json().catch(() => ({}));
+      throw new Error(errorBody?.detail || 'Preview profiling failed');
+    }
+    
+    return res.json();
+  },
+
+  finalizeImport: (payload: { assets: any[]; relationships: any[] }) =>
+    request<{ status: string; message: string }>('/assets/finalize-import', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  // Drafts
+  getDrafts: () => request<ImportDraft[]>('/assets/drafts'),
+
+  saveDraft: (payload: { name: string; draft_json: { assets: any[]; relationships: any[] } }) =>
+    request<ImportDraft>('/assets/drafts', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+
+  deleteDraft: (draftId: string) =>
+    request<{ status: string; message: string }>(`/assets/drafts/${draftId}`, {
+      method: 'DELETE',
     }),
 };

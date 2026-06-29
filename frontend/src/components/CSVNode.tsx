@@ -39,7 +39,7 @@ const DataTypeBadge = ({ type }: { type: string }) => {
   );
 };
 
-export const CSVNode = memo(({ data, isConnectable }: NodeProps<CSVNodeData>) => {
+export const CSVNode = memo(({ data, isConnectable, selected }: NodeProps<CSVNodeData>) => {
   const {
     id,
     name,
@@ -56,7 +56,7 @@ export const CSVNode = memo(({ data, isConnectable }: NodeProps<CSVNodeData>) =>
     highlightedColumnIds = [],
   } = data;
 
-  const isAssetSelected = selectedAssetId === id && !selectedColumnId;
+  const isAssetSelected = (selectedAssetId === id && !selectedColumnId) || selected;
   const isHighlighted = highlightedNodeIds.includes(id);
   const isAnyHighlightActive = highlightedNodeIds.length > 0;
 
@@ -74,15 +74,8 @@ export const CSVNode = memo(({ data, isConnectable }: NodeProps<CSVNodeData>) =>
     }
   }
 
-  // Dimming logic
+  // Dimming logic - disabled per user request
   let dimClass = '';
-  if (isConnecting) {
-    if (isDragOrigin && connectionRole === 'destination') {
-      dimClass = 'opacity-40 scale-[0.98] blur-[0.5px]';
-    }
-  } else if (isAnyHighlightActive && !isHighlighted) {
-    dimClass = 'opacity-30 scale-[0.98] blur-[0.5px]';
-  }
 
   // Border highlighting
   let borderClass = 'border-workspace-750 hover:border-workspace-600';
@@ -175,18 +168,15 @@ export const CSVNode = memo(({ data, isConnectable }: NodeProps<CSVNodeData>) =>
           const hasNotes = !!col.notes;
           const hasTags = col.tags && col.tags.length > 0;
 
-          // Column dimming
+          // Column dimming - disabled per user request
           let colDimClass = '';
-          if (isAnyHighlightActive && !isColHighlighted) {
-            colDimClass = 'opacity-30';
-          }
 
           // Column Highlight Border
           let colBorderClass = 'border-transparent text-workspace-200';
           if (isColSelected) {
-            colBorderClass = 'bg-workspace-750 border-brand-teal/30 text-workspace-50 shadow-sm';
+            colBorderClass = 'bg-brand-teal/10 border-brand-teal text-workspace-50 shadow-sm ring-1 ring-brand-teal/30 scale-[1.02]';
           } else if (isColHighlighted) {
-            colBorderClass = 'bg-brand-emerald/10 border-brand-emerald/40 text-workspace-50 shadow-sm font-semibold scale-[1.01]';
+            colBorderClass = 'bg-brand-emerald/15 border-brand-emerald/40 text-workspace-50 shadow-sm font-semibold scale-[1.01]';
           }
 
           return (

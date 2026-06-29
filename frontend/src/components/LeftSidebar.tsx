@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { Upload, Search, FileSpreadsheet, Loader2, Focus, Trash2, Tag, BookOpen, User } from 'lucide-react';
+import { Upload, Search, FileSpreadsheet, Loader2, Focus, Trash2, Tag, BookOpen, User, FileText } from 'lucide-react';
 import { api } from '../api';
 import type { Asset, SearchResultItem } from '../types';
 import { CommentsPanel } from './Comments';
@@ -12,6 +12,7 @@ interface LeftSidebarProps {
   onFocusNode: (assetId: string, columnId?: string) => void;
   selectedAssetId?: string | null;
   onSelectAssetHeader?: (assetId: string) => void;
+  onShowImportPreview?: (previewData: { assets: any[]; relationships: any[] }) => void;
   
   // Comments props
   comments: CanvasComment[];
@@ -29,6 +30,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onFocusNode,
   selectedAssetId,
   onSelectAssetHeader,
+  onShowImportPreview,
   comments,
   isCommentMode,
   onToggleCommentMode,
@@ -86,11 +88,13 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
     setIsUploading(true);
     setUploadError(null);
     try {
-      await api.uploadAssets(files);
-      onRefreshAssets();
+      const previewData = await api.profilePreview(files);
+      if (onShowImportPreview) {
+        onShowImportPreview(previewData);
+      }
       if (fileInputRef.current) fileInputRef.current.value = '';
     } catch (err: any) {
-      setUploadError(err.message || 'Failed to upload and profile Excel workbook.');
+      setUploadError(err.message || 'Failed to profile Excel workbook.');
     } finally {
       setIsUploading(false);
     }
@@ -162,6 +166,15 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             </div>
           )}
         </div>
+        
+        <button
+          onClick={() => onShowImportPreview?.({ assets: [], relationships: [] })}
+          className="w-full mt-2 py-1.5 rounded bg-workspace-800 hover:bg-workspace-750 border border-workspace-750 text-[10px] text-workspace-300 font-semibold flex items-center justify-center space-x-1.5 transition"
+        >
+          <FileText size={12} className="text-indigo-400" />
+          <span>Open Saved Import Drafts</span>
+        </button>
+
         {uploadError && (
           <p className="text-[10px] text-brand-coral mt-2 font-medium bg-brand-coral/5 border border-brand-coral/10 p-2 rounded-lg">
             {uploadError}

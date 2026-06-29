@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Network, History, Trash2, ArrowRight, Clock, User, PlusCircle } from 'lucide-react';
+import { Network, History, Trash2, ArrowRight, Clock, Database, Columns, PlusCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import type { Asset, Relationship, ActivityLog } from '../types';
 
 interface BottomPanelProps {
@@ -39,16 +39,62 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
   const getRelationshipBadgeColor = (type: string) => {
     switch (type) {
       case 'DERIVES_FROM':
-        return 'bg-brand-coral/10 text-brand-coral border-brand-coral/20';
+        return 'bg-brand-coral/10 text-brand-coral border border-brand-coral/20';
       case 'MAPS_TO':
-        return 'bg-brand-violet/10 text-brand-violet border-brand-violet/20';
+        return 'bg-brand-violet/10 text-brand-violet border border-brand-violet/20';
       case 'LOOKUP_FROM':
-        return 'bg-brand-emerald/10 text-brand-emerald border-brand-emerald/20';
+        return 'bg-brand-emerald/10 text-brand-emerald border border-brand-emerald/20';
       case 'COPIED_FROM':
-        return 'bg-blue-900/20 text-blue-300 border-blue-800/40';
+        return 'bg-blue-900/20 text-blue-300 border border-blue-800/40';
       default:
-        return 'bg-workspace-700 text-workspace-300 border-workspace-600';
+        return 'bg-workspace-700 text-workspace-300 border border-workspace-600';
     }
+  };
+
+  const getRelationshipTypeLabel = (type: string) => {
+    switch (type) {
+      case 'DERIVES_FROM':
+        return 'derives from';
+      case 'MAPS_TO':
+        return 'maps to';
+      case 'LOOKUP_FROM':
+        return 'looks up from';
+      case 'COPIED_FROM':
+        return 'copied from';
+      default:
+        return 'connected to';
+    }
+  };
+
+  // Convert raw activities with UUIDs into human-readable details
+  const makeDetailsHumanReadable = (details: string): string => {
+    let readable = details
+      .replace(/MAPS_TO/g, 'maps to')
+      .replace(/DERIVES_FROM/g, 'derives from')
+      .replace(/LOOKUP_FROM/g, 'looks up from')
+      .replace(/COPIED_FROM/g, 'copied from');
+
+    const uuidRegex = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+    readable = readable.replace(uuidRegex, (match) => {
+      // Resolve as column first
+      for (const asset of assets) {
+        if (asset.columns) {
+          const col = asset.columns.find((c) => c.id === match);
+          if (col) {
+            return `${asset.name}.${col.name}`;
+          }
+        }
+      }
+      // Resolve as asset
+      const asset = assets.find((a) => a.id === match);
+      if (asset) return asset.name;
+
+      return match;
+    });
+
+    // Clean up "column (Table.Col)" -> "Table.Col"
+    readable = readable.replace(/(column|asset)\s*\(([^)]+)\)/gi, '$2');
+    return readable;
   };
 
   return (
@@ -105,37 +151,59 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-workspace-750/30">
-                    {relationships.map((rel) => (
-                      <tr key={rel.id} className="hover:bg-workspace-800/30 transition-colors group">
-                        <td className="py-2.5 pr-4 font-mono text-[11px] text-workspace-200">
-                          {resolveNodeName(rel.source_node_type, rel.source_node_id)}
-                        </td>
-                        <td className="py-2.5 pr-4">
-                          <div className="flex items-center space-x-1.5">
-                            {rel.relationship_type && rel.relationship_type !== 'MAPS_TO' ? (
-                              <span className={`px-2 py-0.5 rounded border text-[9px] font-mono font-bold tracking-wide ${getRelationshipBadgeColor(rel.relationship_type)}`}>
-                                {rel.relationship_type}
+                    {relationships.map((rel) => {
+                      const isSourceCol = rel.source_node_type === 'column';
+                      const isDestCol = rel.destination_node_type === 'column';
+                      return (
+                        <tr key={rel.id} className="hover:bg-workspace-800/30 transition-colors group">
+                          <td className="py-2.5 pr-4 text-workspace-200">
+                            <div className="flex items-center space-x-1.5">
+                              {isSourceCol ? (
+                                <Columns size={12} className="text-brand-violet shrink-0" />
+                              ) : (
+                                <Database size={12} className="text-brand-teal shrink-0" />
+                              )}
+                              <span className="font-mono text-[11px] truncate max-w-sm">
+                                {resolveNodeName(rel.source_node_type, rel.source_node_id)}
                               </span>
-                            ) : (
-                              <span className="text-[10px] text-workspace-600 font-mono italic">-</span>
-                            )}
-                            <ArrowRight size={10} className="text-workspace-600" />
-                          </div>
-                        </td>
-                        <td className="py-2.5 pr-4 font-mono text-[11px] text-workspace-200">
-                          {resolveNodeName(rel.destination_node_type, rel.destination_node_id)}
-                        </td>
-                        <td className="py-2.5 text-right">
-                          <button
-                            onClick={() => onDeleteRelationship(rel.id)}
-                            className="p-1 hover:bg-workspace-750 text-workspace-600 hover:text-brand-coral rounded transition-all opacity-0 group-hover:opacity-100"
-                            title="Remove lineage edge"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))}
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-4">
+                            <div className="flex items-center space-x-2">
+                              {rel.relationship_type ? (
+                                <span className={`px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ${getRelationshipBadgeColor(rel.relationship_type)}`}>
+                                  {getRelationshipTypeLabel(rel.relationship_type)}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] text-workspace-600 font-mono italic">-</span>
+                              )}
+                              <ArrowRight size={10} className="text-workspace-600 shrink-0" />
+                            </div>
+                          </td>
+                          <td className="py-2.5 pr-4 text-workspace-200">
+                            <div className="flex items-center space-x-1.5">
+                              {isDestCol ? (
+                                <Columns size={12} className="text-brand-violet shrink-0" />
+                              ) : (
+                                <Database size={12} className="text-brand-teal shrink-0" />
+                              )}
+                              <span className="font-mono text-[11px] truncate max-w-sm">
+                                {resolveNodeName(rel.destination_node_type, rel.destination_node_id)}
+                              </span>
+                            </div>
+                          </td>
+                          <td className="py-2.5 text-right">
+                            <button
+                              onClick={() => onDeleteRelationship(rel.id)}
+                              className="p-1 hover:bg-workspace-750 text-workspace-600 hover:text-brand-coral rounded transition-all opacity-0 group-hover:opacity-100"
+                              title="Remove lineage edge"
+                            >
+                              <Trash2 size={12} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -159,21 +227,25 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                     minute: '2-digit',
                     second: '2-digit',
                   });
+
+                  let icon = <Clock size={13} className="text-workspace-500" />;
+                  if (act.activity_type.includes('created')) {
+                    icon = <PlusCircle size={13} className="text-brand-teal" />;
+                  } else if (act.activity_type.includes('updated')) {
+                    icon = <RefreshCw size={13} className="text-brand-violet animate-spin-slow" />;
+                  } else if (act.activity_type.includes('deleted')) {
+                    icon = <AlertCircle size={13} className="text-brand-coral" />;
+                  }
+
                   return (
                     <div
                       key={act.id}
-                      className="flex items-start justify-between bg-workspace-900 border border-workspace-750/30 p-2 rounded-lg text-xs"
+                      className="flex items-start justify-between bg-workspace-900 border border-workspace-750/30 p-2.5 rounded-lg text-xs hover:border-workspace-700 transition"
                     >
                       <div className="flex items-center space-x-2.5 min-w-0">
-                        <div className="shrink-0 text-workspace-600">
-                          {act.activity_type.includes('created') || act.activity_type.includes('logged') ? (
-                            <PlusCircle size={13} className="text-brand-teal" />
-                          ) : (
-                            <Clock size={13} className="text-workspace-500" />
-                          )}
-                        </div>
+                        <div className="shrink-0">{icon}</div>
                         <p className="text-workspace-200 truncate pr-4 font-medium" title={act.details}>
-                          {act.details}
+                          {makeDetailsHumanReadable(act.details)}
                         </p>
                       </div>
                       <div className="flex items-center space-x-1.5 shrink-0 text-workspace-600 font-mono text-[10px]">

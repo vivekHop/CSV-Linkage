@@ -91,3 +91,14 @@ export type WSBroadcastEvent =
   | { event_type: 'relationship_deleted'; data: { id: string; source_node_id: string; destination_node_id: string } }
   | { event_type: 'relationship_updated'; data: Relationship }
   | { event_type: 'activity_logged'; data: { activity_type: string; details: string; created_at: string } };
+
+export interface ImportDraft {
+  id: string;
+  name: string;
+  draft_json: {
+    assets: any[];
+    relationships: any[];
+  };
+  created_at: string;
+  updated_at: string;
+}

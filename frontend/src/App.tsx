@@ -14,6 +14,7 @@ import { api, WS_URL } from './api';
 import type { Asset, Column, Relationship, ActivityLog } from './types';
 import { CSVNode } from './components/CSVNode';
 import { LeftSidebar } from './components/LeftSidebar';
+import { ImportPreviewModal } from './components/ImportPreviewModal';
 import { RightSidebar } from './components/RightSidebar';
 import { BottomPanel } from './components/BottomPanel';
 import { LineageEdge } from './components/LineageEdge';
@@ -42,6 +43,7 @@ import {
   Moon,
   Download,
   MessageSquare,
+  XCircle,
 } from 'lucide-react';
 
 // Custom node & edge registry
@@ -83,6 +85,12 @@ export default function App() {
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
   const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>([]);
+  const [selectedEdgeIds, setSelectedEdgeIds] = useState<string[]>([]);
+
+  // Import Preview Modal states
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState<{ assets: any[]; relationships: any[] } | undefined>(undefined);
 
   // Drag connection tracking
   const [connectingState, setConnectingState] = useState<{ nodeId: string; handleId: string | null; handleType: 'source' | 'target' } | null>(null);
@@ -553,19 +561,14 @@ export default function App() {
 
     try {
       for (const asset of clipboardRef.current.assets) {
-        const newAssetId = Math.random().toString(36).substring(2, 9);
-        idMap[asset.id] = newAssetId;
-
         const currentPos = asset.custom_attributes?.position || { x: 50, y: 50 };
         const pastedPos = { x: currentPos.x + 60, y: currentPos.y + 60 };
 
+        // Prepare columns for creation (backend will assign database IDs)
         const pastedCols = (asset.columns || []).map((col) => {
-          const newColId = Math.random().toString(36).substring(2, 9);
-          idMap[col.id] = newColId;
           return {
             ...col,
-            id: newColId,
-            asset_id: newAssetId,
+            // Keep original properties, backend creates DB UUIDs
           };
         });
 
@@ -581,6 +584,17 @@ export default function App() {
 
         const created = await api.createAsset(newAsset);
         pastedAssets.push(created);
+
+        // Map the old asset ID to the actual DB generated UUID
+        idMap[asset.id] = created.id;
+
+        // Map old column IDs to the new actual DB column UUIDs by index
+        (asset.columns || []).forEach((oldCol, idx) => {
+          const newCol = created.columns?.[idx];
+          if (newCol) {
+            idMap[oldCol.id] = newCol.id;
+          }
+        });
       }
 
       for (const rel of clipboardRef.current.relationships) {
@@ -915,6 +929,13 @@ export default function App() {
       } else if (ctrlOrCmd && e.key.toLowerCase() === 'e') {
         e.preventDefault();
         handleExportOpenMetadata();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setSelectedAssetId(null);
+        setSelectedColumnId(null);
+        setSelectedEdgeId(null);
+        setNodes((nds) => nds.map((n) => ({ ...n, selected: false })));
+        setEdges((eds) => eds.map((e) => ({ ...e, selected: false })));
       } else if (e.key.toLowerCase() === 'v') {
         setEditorMode('select');
       } else if (e.key.toLowerCase() === 'm' || e.key === '+') {
@@ -978,15 +999,33 @@ export default function App() {
 
   // Maps Assets and Relationships to React Flow Nodes and Edges
   const buildFlowNodesAndEdges = (allAssets: Asset[], allRels: Relationship[]) => {
-    // 1. Identify trace highlights if an edge/relationship is selected
+    // 1. Identify trace highlights
     const highlightedNodeIds: string[] = [];
     const highlightedColumnIds: string[] = [];
     const highlightedEdgeIds: string[] = [];
 
-    if (selectedEdgeId) {
-      const selectedRel = allRels.find((r) => r.id === selectedEdgeId);
+    // Collect all active selection points
+    const activeSelectedEdgeIds = new Set<string>();
+    if (selectedEdgeId) activeSelectedEdgeIds.add(selectedEdgeId);
+    selectedEdgeIds.forEach(id => activeSelectedEdgeIds.add(id));
+
+    const activeSelectedAssetIds = new Set<string>();
+    if (selectedAssetId) activeSelectedAssetIds.add(selectedAssetId);
+    selectedNodeIds.forEach(id => {
+      const asset = allAssets.find(a => a.id === id);
+      if (asset && asset.asset_type !== 'comment') {
+        activeSelectedAssetIds.add(id);
+      }
+    });
+
+    const activeSelectedColumnIds = new Set<string>();
+    if (selectedColumnId) activeSelectedColumnIds.add(selectedColumnId);
+
+    // -- 1. Trace Selected Edges/Relationships --
+    activeSelectedEdgeIds.forEach((edgeId) => {
+      const selectedRel = allRels.find((r) => r.id === edgeId);
       if (selectedRel) {
-        highlightedEdgeIds.push(selectedRel.id);
+        if (!highlightedEdgeIds.includes(selectedRel.id)) highlightedEdgeIds.push(selectedRel.id);
 
         const destId = selectedRel.destination_node_id;
 
@@ -1012,10 +1051,10 @@ export default function App() {
         };
 
         if (selectedRel.destination_node_type === 'column') {
-          highlightedColumnIds.push(destId);
+          if (!highlightedColumnIds.includes(destId)) highlightedColumnIds.push(destId);
           findUpstreamSources(destId);
         } else {
-          highlightedNodeIds.push(destId);
+          if (!highlightedNodeIds.includes(destId)) highlightedNodeIds.push(destId);
         }
 
         if (selectedRel.source_node_type === 'column') {
@@ -1027,22 +1066,16 @@ export default function App() {
             highlightedNodeIds.push(selectedRel.source_node_id);
           }
         }
-
-        // Highlight parent assets of all active columns in the lineage trace
-        highlightedColumnIds.forEach((colId) => {
-          const parentAsset = allAssets.find((a) =>
-            a.columns?.some((c) => c.id === colId)
-          );
-          if (parentAsset && !highlightedNodeIds.includes(parentAsset.id)) {
-            highlightedNodeIds.push(parentAsset.id);
-          }
-        });
       }
-    } else if (selectedColumnId) {
-      // Highlight all edges directly connected to this column (either as source or destination)
+    });
+
+    // -- 2. Trace Selected Columns --
+    activeSelectedColumnIds.forEach((colId) => {
+      if (!highlightedColumnIds.includes(colId)) highlightedColumnIds.push(colId);
+
       allRels.forEach((rel) => {
-        const isSource = rel.source_node_type === 'column' && rel.source_node_id === selectedColumnId;
-        const isDest = rel.destination_node_type === 'column' && rel.destination_node_id === selectedColumnId;
+        const isSource = rel.source_node_type === 'column' && rel.source_node_id === colId;
+        const isDest = rel.destination_node_type === 'column' && rel.destination_node_id === colId;
         if (isSource || isDest) {
           if (!highlightedEdgeIds.includes(rel.id)) {
             highlightedEdgeIds.push(rel.id);
@@ -1063,24 +1096,17 @@ export default function App() {
           }
         }
       });
-      if (!highlightedColumnIds.includes(selectedColumnId)) {
-        highlightedColumnIds.push(selectedColumnId);
-      }
-      // Highlight parent assets of columns
-      highlightedColumnIds.forEach((colId) => {
-        const parentAsset = allAssets.find((a) =>
-          a.columns?.some((c) => c.id === colId)
-        );
-        if (parentAsset && !highlightedNodeIds.includes(parentAsset.id)) {
-          highlightedNodeIds.push(parentAsset.id);
-        }
-      });
-    } else if (selectedAssetId) {
-      // Find all columns belonging to this asset
-      const assetCols = allAssets.find((a) => a.id === selectedAssetId)?.columns?.map((c) => c.id) || [];
+    });
+
+    // -- 3. Trace Selected Assets/Tables --
+    activeSelectedAssetIds.forEach((assetId) => {
+      if (!highlightedNodeIds.includes(assetId)) highlightedNodeIds.push(assetId);
+
+      const assetCols = allAssets.find((a) => a.id === assetId)?.columns?.map((c) => c.id) || [];
       allRels.forEach((rel) => {
-        const isSourceAsset = rel.source_node_id === selectedAssetId || (rel.source_node_type === 'column' && assetCols.includes(rel.source_node_id));
-        const isDestAsset = rel.destination_node_id === selectedAssetId || (rel.destination_node_type === 'column' && assetCols.includes(rel.destination_node_id));
+        const isSourceAsset = rel.source_node_id === assetId || (rel.source_node_type === 'column' && assetCols.includes(rel.source_node_id));
+        const isDestAsset = rel.destination_node_id === assetId || (rel.destination_node_type === 'column' && assetCols.includes(rel.destination_node_id));
+        
         if (isSourceAsset || isDestAsset) {
           if (!highlightedEdgeIds.includes(rel.id)) {
             highlightedEdgeIds.push(rel.id);
@@ -1100,19 +1126,17 @@ export default function App() {
           }
         }
       });
-      if (!highlightedNodeIds.includes(selectedAssetId)) {
-        highlightedNodeIds.push(selectedAssetId);
+    });
+
+    // -- 4. Post-Process Parent Asset Highlights for all highlighted Columns --
+    highlightedColumnIds.forEach((colId) => {
+      const parentAsset = allAssets.find((a) =>
+        a.columns?.some((c) => c.id === colId)
+      );
+      if (parentAsset && !highlightedNodeIds.includes(parentAsset.id)) {
+        highlightedNodeIds.push(parentAsset.id);
       }
-      // Highlight parent assets of columns
-      highlightedColumnIds.forEach((colId) => {
-        const parentAsset = allAssets.find((a) =>
-          a.columns?.some((c) => c.id === colId)
-        );
-        if (parentAsset && !highlightedNodeIds.includes(parentAsset.id)) {
-          highlightedNodeIds.push(parentAsset.id);
-        }
-      });
-    }
+    });
 
     // 2. Create Nodes
     const flowNodes: Node[] = allAssets.map((asset, index) => {
@@ -1132,7 +1156,14 @@ export default function App() {
           data: {
             id: asset.id,
             name: asset.name,
+            color: asset.custom_attributes?.color || 'teal',
             onUpdateName: (newName: string) => handleUpdateAsset(asset.id, { name: newName }),
+            onUpdateColor: (newColor: string) => handleUpdateAsset(asset.id, {
+              custom_attributes: {
+                ...asset.custom_attributes,
+                color: newColor,
+              },
+            }),
             onDelete: () => handleDeleteAsset(asset.id),
           },
         };
@@ -1236,6 +1267,9 @@ export default function App() {
         targetHandle: targetHandleId,
         animated: selectedEdgeId ? isEdgeHighlighted : true,
         selected: isEdgeSelected,
+        data: {
+          isHighlighted: isEdgeHighlighted,
+        },
         style: {
           stroke: edgeColor,
           strokeWidth: isEdgeSelected ? 3.5 : (isEdgeHighlighted ? 2.5 : 1.8),
@@ -1263,6 +1297,8 @@ export default function App() {
     selectedAssetId,
     selectedColumnId,
     selectedEdgeId,
+    selectedNodeIds,
+    selectedEdgeIds,
     connectingState,
     comments,
     pendingComment,
@@ -1271,7 +1307,11 @@ export default function App() {
 
   // Asset/Column Selection triggers
   const handleSelectAssetHeader = (assetId: string) => {
-    setSelectedAssetId(assetId);
+    if (selectedAssetId === assetId && !selectedColumnId) {
+      setSelectedAssetId(null);
+    } else {
+      setSelectedAssetId(assetId);
+    }
     setSelectedColumnId(null);
     setSelectedEdgeId(null);
   };
@@ -1336,14 +1376,19 @@ export default function App() {
       position: node.position,
     };
 
+    // Optimistically update local state immediately
+    setAssets((prev) =>
+      prev.map((a) => (a.id === node.id ? { ...a, custom_attributes: updatedCustom } : a))
+    );
+
     try {
       await api.updateAsset(node.id, { custom_attributes: updatedCustom });
-      // Update local state positions without full workspace reload to avoid jarring UI resets
-      setAssets((prev) =>
-        prev.map((a) => (a.id === node.id ? { ...a, custom_attributes: updatedCustom } : a))
-      );
     } catch (err) {
       console.error('Failed to save node position:', err);
+      // Revert local state
+      setAssets((prev) =>
+        prev.map((a) => (a.id === node.id ? { ...a, custom_attributes: currentCustom } : a))
+      );
     }
   };
 
@@ -1359,15 +1404,24 @@ export default function App() {
 
     if (confirm(message)) {
       saveUndoState();
+      const originalAssets = assets;
+      const originalRels = relationships;
+
+      // Optimistically remove asset and associated relationships from state
+      setAssets((prev) => prev.filter((a) => a.id !== assetId));
+      setRelationships((prev) => prev.filter((r) => r.source_node_id !== assetId && r.destination_node_id !== assetId));
+      if (selectedAssetId === assetId) {
+        setSelectedAssetId(null);
+        setSelectedColumnId(null);
+      }
+
       try {
         await api.deleteAsset(assetId);
-        if (selectedAssetId === assetId) {
-          setSelectedAssetId(null);
-          setSelectedColumnId(null);
-        }
-        loadWorkspaceData();
+        api.getActivities(30).then(setActivities).catch(console.error);
       } catch (err) {
         console.error('Failed to delete asset:', err);
+        setAssets(originalAssets);
+        setRelationships(originalRels);
       }
     }
   };
@@ -1388,40 +1442,95 @@ export default function App() {
 
     if (confirm(`Are you sure you want to delete column '${displayName}'? All associated lineage connections will be removed.`)) {
       saveUndoState();
+      const originalAssets = assets;
+      const originalRels = relationships;
+
+      // Optimistically remove the column from the asset and remove associated relationships
+      setAssets((prev) =>
+        prev.map((asset) => ({
+          ...asset,
+          columns: asset.columns ? asset.columns.filter((c) => c.id !== columnId) : [],
+          column_count: asset.columns ? asset.columns.filter((c) => c.id !== columnId).length : 0,
+        }))
+      );
+      setRelationships((prev) =>
+        prev.filter((r) => r.source_node_id !== columnId && r.destination_node_id !== columnId)
+      );
+
+      if (selectedColumnId === columnId) {
+        setSelectedColumnId(null);
+      }
+
       try {
         await api.deleteColumn(columnId);
-        if (selectedColumnId === columnId) {
-          setSelectedColumnId(null);
-        }
-        loadWorkspaceData();
+        api.getActivities(30).then(setActivities).catch(console.error);
       } catch (err) {
         console.error('Failed to delete column:', err);
+        setAssets(originalAssets);
+        setRelationships(originalRels);
       }
     }
   };
 
   // Metadata Updates (keeps position intact while editing descriptions/notes/properties)
   const handleUpdateAsset = async (assetId: string, updates: Partial<Asset>) => {
+    const existingAsset = assets.find((a) => a.id === assetId);
+    if (!existingAsset) return;
+
+    const originalAssets = assets;
+    const mergedAttributes = {
+      ...existingAsset.custom_attributes,
+      ...updates.custom_attributes,
+    };
+    
+    const updatedAsset = {
+      ...existingAsset,
+      ...updates,
+      custom_attributes: mergedAttributes,
+    };
+
+    // Optimistically update local assets state
+    setAssets((prev) => prev.map((a) => (a.id === assetId ? updatedAsset : a)));
+
     try {
-      const existingAsset = assets.find((a) => a.id === assetId);
-      if (existingAsset) {
-        updates.custom_attributes = {
-          ...existingAsset.custom_attributes,
-          ...updates.custom_attributes,
-        };
-      }
       await api.updateAsset(assetId, updates);
-      loadWorkspaceData();
+      // Fetch activities in the background to update the log
+      api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {
+      // Revert on failure
+      setAssets(originalAssets);
       alert('Failed to save table modifications.');
     }
   };
 
   const handleUpdateColumn = async (columnId: string, updates: Partial<Column>) => {
+    const originalAssets = assets;
+    
+    setAssets((prev) =>
+      prev.map((asset) => {
+        const hasCol = asset.columns?.some((c) => c.id === columnId);
+        if (hasCol) {
+          return {
+            ...asset,
+            columns: asset.columns.map((col) => {
+              if (col.id === columnId) {
+                return { ...col, ...updates };
+              }
+              return col;
+            }),
+          };
+        }
+        return asset;
+      })
+    );
+
     try {
       await api.updateColumn(columnId, updates);
-      loadWorkspaceData();
+      // Fetch activities in the background to update the log
+      api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {
+      // Revert on failure
+      setAssets(originalAssets);
       alert('Failed to save column annotations.');
     }
   };
@@ -1441,8 +1550,23 @@ export default function App() {
     const targetNodeType = targetIsColumn ? 'column' : 'asset';
 
     saveUndoState();
+
+    const tempId = 'temp-rel-' + Math.random().toString(36).substring(2, 9);
+    const newRel: Relationship = {
+      id: tempId,
+      source_node_type: sourceNodeType,
+      source_node_id: sourceNodeId,
+      destination_node_type: targetNodeType,
+      destination_node_id: targetNodeId,
+      relationship_type: 'MAPS_TO',
+      metadata_json: {},
+    };
+
+    // Optimistically update relationships
+    setRelationships((prev) => [...prev, newRel]);
+
     try {
-      await api.createRelationship({
+      const created = await api.createRelationship({
         source_node_type: sourceNodeType,
         source_node_id: sourceNodeId,
         destination_node_type: targetNodeType,
@@ -1450,11 +1574,17 @@ export default function App() {
         relationship_type: 'MAPS_TO',
         metadata_json: {},
       });
-      loadWorkspaceData();
+      // Replace temporary ID with actual DB UUID
+      setRelationships((prev) =>
+        prev.map((r) => (r.id === tempId ? created : r))
+      );
+      api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err: any) {
+      // Revert on failure
+      setRelationships((prev) => prev.filter((r) => r.id !== tempId));
       alert(err.message || 'Failed to create lineage connection.');
     }
-  }, [loadWorkspaceData, assets, relationships]);
+  }, [assets, relationships]);
 
   const onConnectStart = useCallback((_e: any, { nodeId, handleId, handleType }: { nodeId: string; handleId: string | null; handleType: 'source' | 'target' }) => {
     setConnectingState({ nodeId, handleId, handleType });
@@ -1467,17 +1597,26 @@ export default function App() {
     }, 250);
   }, []);
 
+  const onSelectionChange = useCallback((params: { nodes: Node[]; edges: Edge[] }) => {
+    setSelectedNodeIds(params.nodes.map(n => n.id));
+    setSelectedEdgeIds(params.edges.map(e => e.id));
+  }, []);
+
   const onEdgeClick = useCallback(async (e: React.MouseEvent, edge: Edge) => {
     if (editorMode === 'edgecut') {
       saveUndoState();
+      const originalRels = relationships;
+      // Optimistically remove
+      setRelationships((prev) => prev.filter((r) => r.id !== edge.id));
+      if (selectedEdgeId === edge.id) {
+        setSelectedEdgeId(null);
+      }
       try {
         await api.deleteRelationship(edge.id);
-        if (selectedEdgeId === edge.id) {
-          setSelectedEdgeId(null);
-        }
-        loadWorkspaceData();
+        api.getActivities(30).then(setActivities).catch(console.error);
       } catch (err) {
         console.error('Failed to cut edge:', err);
+        setRelationships(originalRels);
       }
     } else {
       setSelectedEdgeId(edge.id);
@@ -1489,14 +1628,18 @@ export default function App() {
 
   const handleDeleteRelationship = async (relId: string) => {
     saveUndoState();
+    const originalRels = relationships;
+    // Optimistically remove
+    setRelationships((prev) => prev.filter((r) => r.id !== relId));
+    if (selectedEdgeId === relId) {
+      setSelectedEdgeId(null);
+    }
     try {
       await api.deleteRelationship(relId);
-      if (selectedEdgeId === relId) {
-        setSelectedEdgeId(null);
-      }
-      loadWorkspaceData();
+      api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {
       console.error('Failed to delete relationship:', err);
+      setRelationships(originalRels);
     }
   };
 
@@ -1529,6 +1672,10 @@ export default function App() {
             onFocusNode={handleFocusNode}
             selectedAssetId={selectedAssetId}
             onSelectAssetHeader={handleSelectAssetHeader}
+            onShowImportPreview={(data) => {
+              setPreviewData(data);
+              setIsPreviewOpen(true);
+            }}
             comments={comments}
             isCommentMode={isCommentMode}
             onToggleCommentMode={() => {
@@ -1601,6 +1748,24 @@ export default function App() {
 
           {/* Sleek Floating Toolbar at Top Center */}
           <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-workspace-850/90 backdrop-blur-md border border-workspace-700 rounded-xl px-3 py-1.5 flex items-center space-x-2 shadow-2xl z-30 pointer-events-auto select-none">
+            {/* Deselect button */}
+            <div className="flex items-center border-r border-workspace-750 pr-2">
+              <button
+                onClick={() => {
+                  setSelectedAssetId(null);
+                  setSelectedColumnId(null);
+                  setSelectedEdgeId(null);
+                  setNodes((nds) => nds.map((n) => ({ ...n, selected: false })));
+                  setEdges((eds) => eds.map((e) => ({ ...e, selected: false })));
+                }}
+                title="Deselect All (ESC)"
+                disabled={!selectedAssetId && !selectedColumnId && !selectedEdgeId && !nodes.some(n => n.selected) && !edges.some(e => e.selected)}
+                className="p-1.5 rounded-lg text-workspace-400 hover:text-brand-coral hover:bg-workspace-800 disabled:opacity-25 disabled:pointer-events-none transition-colors cursor-pointer"
+              >
+                <XCircle size={14} />
+              </button>
+            </div>
+
             {/* Mode selection group */}
             <div className="flex items-center space-x-0.5 border-r border-workspace-750 pr-2">
               <button
@@ -1757,6 +1922,7 @@ export default function App() {
             onEdgeClick={onEdgeClick}
             onPaneClick={onPaneClick}
             connectionLineComponent={CustomConnectionLine}
+            onSelectionChange={onSelectionChange}
             onInit={(instance) => {
               reactFlowInstance.current = instance;
             }}
@@ -1764,9 +1930,11 @@ export default function App() {
             minZoom={0.2}
             maxZoom={1.5}
             zoomOnScroll={false}
+            panOnScroll={true}
             panOnDrag={editorMode !== 'multiselect'}
             selectionOnDrag={editorMode === 'multiselect'}
             selectionKeyCode={editorMode === 'multiselect' ? null : 'Shift'}
+            multiSelectionKeyCode="Shift"
             proOptions={{ hideAttribution: true }}
           >
             <Background color={theme === 'dark' ? '#1f2025' : '#cbd5e1'} gap={24} size={1} />
@@ -1874,6 +2042,20 @@ export default function App() {
           onDeleteRelationship={handleDeleteRelationship}
         />
       </div>
+
+      <ImportPreviewModal
+        isOpen={isPreviewOpen}
+        onClose={() => {
+          setIsPreviewOpen(false);
+          setPreviewData(undefined);
+        }}
+        onImportComplete={() => {
+          setIsPreviewOpen(false);
+          setPreviewData(undefined);
+          loadWorkspaceData();
+        }}
+        initialData={previewData}
+      />
     </div>
   );
 }

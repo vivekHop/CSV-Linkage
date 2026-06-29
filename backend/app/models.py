@@ -121,3 +121,15 @@ class ActivityLog(Base):
     details = Column(Text, nullable=False)
     asset_id = Column(String(36), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+class ImportDraft(Base):
+    """
+    Persisted import draft state for Excel uploads
+    """
+    __tablename__ = "import_drafts"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(255), nullable=False)
+    draft_json = Column(JSON, nullable=False) # { "assets": [...], "relationships": [...] }
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

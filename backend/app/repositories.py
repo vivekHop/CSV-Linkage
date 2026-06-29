@@ -3,7 +3,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_
 from typing import List, Dict, Any, Optional, Tuple
-from app.models import Asset, ColumnModel, RelationshipModel, VersionHistory, ActivityLog
+from app.models import Asset, ColumnModel, RelationshipModel, VersionHistory, ActivityLog, ImportDraft
 from app.websockets import manager
 import asyncio
 
@@ -45,6 +45,61 @@ def create_asset_snapshot(asset: Asset) -> Dict[str, Any]:
             for col in asset.columns
         ]
     }
+
+
+def cleanup_formula_on_rel_deletion(db: Session, source_col_id: str, dest_col_id: str):
+    import re
+    # Fetch destination column
+    dest_col = db.query(ColumnModel).filter(ColumnModel.id == dest_col_id).first()
+    if not dest_col:
+        return
+        
+    # Check if there is a formula in custom_attributes
+    custom_attrs = dest_col.custom_attributes or {}
+    formula = custom_attrs.get("formula")
+    if not formula:
+        return
+        
+    # Fetch source column
+    source_col = db.query(ColumnModel).filter(ColumnModel.id == source_col_id).first()
+    source_col_name = source_col.name if source_col else None
+    
+    # Check if this destination column has any OTHER active incoming lineage relationships
+    other_incoming_rels = db.query(RelationshipModel).filter(
+        RelationshipModel.destination_node_type == "column",
+        RelationshipModel.destination_node_id == dest_col_id,
+        RelationshipModel.source_node_id != source_col_id
+    ).all()
+    
+    if not other_incoming_rels:
+        # No other source left, clear the formula entirely
+        new_attrs = dict(custom_attrs)
+        new_attrs.pop("formula", None)
+        dest_col.custom_attributes = new_attrs
+    else:
+        # There are other sources left, we clean up this source's column references in the formula
+        if source_col_name:
+            # Clean f"[{source_col_name}]" or f"[{asset_name}.{source_col_name}]"
+            escaped_name = re.escape(source_col_name)
+            # Match [source_col_name] or [Anything.source_col_name]
+            pattern = rf"\[([^\]]+\.)?{escaped_name}\]"
+            cleaned_formula = re.sub(pattern, "", formula)
+            
+            # Clean up dangling mathematical operators
+            cleaned_formula = re.sub(r'\s*[\+\-\*\/]\s*(?=[\+\-\*\/])', '', cleaned_formula) # remove duplicated operators
+            cleaned_formula = cleaned_formula.strip()
+            # Clean leading/trailing operator
+            if cleaned_formula.startswith('+') or cleaned_formula.startswith('-') or cleaned_formula.startswith('*') or cleaned_formula.startswith('/'):
+                cleaned_formula = cleaned_formula[1:].strip()
+            if cleaned_formula.endswith('+') or cleaned_formula.endswith('-') or cleaned_formula.endswith('*') or cleaned_formula.endswith('/'):
+                cleaned_formula = cleaned_formula[:-1].strip()
+                
+            new_attrs = dict(custom_attrs)
+            new_attrs["formula"] = cleaned_formula
+            dest_col.custom_attributes = new_attrs
+            
+    db.add(dest_col)
+    db.flush()
 
 
 class BaseRepository:
@@ -159,24 +214,29 @@ class AssetRepository(BaseRepository):
             
         asset_name = db_asset.name
         
-        # Delete related relationships first
-        # We find and delete any relationship where this asset is source or destination, OR its columns are
-        self.db.query(RelationshipModel).filter(
+        # Find and delete any relationship where this asset is source or destination
+        asset_rels = self.db.query(RelationshipModel).filter(
             or_(
                 and_(RelationshipModel.source_node_type == "asset", RelationshipModel.source_node_id == asset_id),
                 and_(RelationshipModel.destination_node_type == "asset", RelationshipModel.destination_node_id == asset_id)
             )
-        ).delete(synchronize_session=False)
+        ).all()
+        for rel in asset_rels:
+            self.db.delete(rel)
         
         # Also clean up column relationships
         column_ids = [c.id for c in db_asset.columns]
         if column_ids:
-            self.db.query(RelationshipModel).filter(
+            col_rels = self.db.query(RelationshipModel).filter(
                 or_(
                     and_(RelationshipModel.source_node_type == "column", RelationshipModel.source_node_id.in_(column_ids)),
                     and_(RelationshipModel.destination_node_type == "column", RelationshipModel.destination_node_id.in_(column_ids))
                 )
-            ).delete(synchronize_session=False)
+            ).all()
+            for rel in col_rels:
+                if rel.source_node_type == "column" and rel.destination_node_type == "column":
+                    cleanup_formula_on_rel_deletion(self.db, rel.source_node_id, rel.destination_node_id)
+                self.db.delete(rel)
 
         self.db.delete(db_asset)
         self.db.commit()
@@ -293,12 +353,16 @@ class ColumnRepository(BaseRepository):
         asset_id = db_col.asset_id
         
         # Delete related relationships first
-        self.db.query(RelationshipModel).filter(
+        col_rels = self.db.query(RelationshipModel).filter(
             or_(
                 and_(RelationshipModel.source_node_type == "column", RelationshipModel.source_node_id == column_id),
                 and_(RelationshipModel.destination_node_type == "column", RelationshipModel.destination_node_id == column_id)
             )
-        ).delete(synchronize_session=False)
+        ).all()
+        for rel in col_rels:
+            if rel.source_node_type == "column" and rel.destination_node_type == "column":
+                cleanup_formula_on_rel_deletion(self.db, rel.source_node_id, rel.destination_node_id)
+            self.db.delete(rel)
         
         self.db.delete(db_col)
         self.db.commit()
@@ -428,6 +492,10 @@ class RelationshipRepository(BaseRepository):
         dest_id = db_rel.destination_node_id
         rel_type = db_rel.relationship_type
         
+        # Clean up formula if it's a column-to-column lineage
+        if db_rel.source_node_type == "column" and db_rel.destination_node_type == "column":
+            cleanup_formula_on_rel_deletion(self.db, source_id, dest_id)
+            
         self.db.delete(db_rel)
         self.db.commit()
         
@@ -545,3 +613,39 @@ class SearchRepository(BaseRepository):
 class ActivityLogRepository(BaseRepository):
     def get_recent(self, limit: int = 50) -> List[ActivityLog]:
         return self.db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(limit).all()
+
+
+class ImportDraftRepository(BaseRepository):
+    def get_all(self) -> List[ImportDraft]:
+        return self.db.query(ImportDraft).order_by(ImportDraft.created_at.desc()).all()
+
+    def get_by_id(self, draft_id: str) -> Optional[ImportDraft]:
+        return self.db.query(ImportDraft).filter(ImportDraft.id == draft_id).first()
+
+    def create(self, name: str, draft_json: Dict[str, Any]) -> ImportDraft:
+        db_draft = ImportDraft(name=name, draft_json=draft_json)
+        self.db.add(db_draft)
+        self.db.commit()
+        self.db.refresh(db_draft)
+        return db_draft
+
+    def update(self, draft_id: str, updates: Dict[str, Any]) -> Optional[ImportDraft]:
+        db_draft = self.get_by_id(draft_id)
+        if not db_draft:
+            return None
+        if "name" in updates:
+            db_draft.name = updates["name"]
+        if "draft_json" in updates:
+            db_draft.draft_json = updates["draft_json"]
+        db_draft.updated_at = datetime.utcnow()
+        self.db.commit()
+        self.db.refresh(db_draft)
+        return db_draft
+
+    def delete(self, draft_id: str) -> bool:
+        db_draft = self.get_by_id(draft_id)
+        if not db_draft:
+            return False
+        self.db.delete(db_draft)
+        self.db.commit()
+        return True
