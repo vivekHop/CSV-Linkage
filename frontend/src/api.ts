@@ -1,7 +1,14 @@
 import type { Asset, Column, Relationship, VersionHistory, ActivityLog, SearchResponse } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
-export const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+
+let wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+if (wsUrl.startsWith('http://')) {
+  wsUrl = wsUrl.replace('http://', 'ws://');
+} else if (wsUrl.startsWith('https://')) {
+  wsUrl = wsUrl.replace('https://', 'wss://');
+}
+export const WS_URL = wsUrl;
 
 // API Client Wrapper
 async function request<T>(path: string, options?: RequestInit): Promise<T> {

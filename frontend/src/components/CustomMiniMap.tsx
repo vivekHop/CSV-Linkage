@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { X } from 'lucide-react';
+import { X, MessageSquare } from 'lucide-react';
 import { useStore, useReactFlow, useViewport } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import type { Relationship, Asset } from '../types';
@@ -357,6 +357,54 @@ export const CustomMiniMap: React.FC<CustomMiniMapProps> = ({
           {nodes.map((node) => {
             const isSelected = selectedAssetId === node.id;
             const isHighlighted = highlightedNodeIds.includes(node.id);
+
+            if (node.type === 'commentNode') {
+              return (
+                <div
+                  key={node.id}
+                  style={{
+                    position: 'absolute',
+                    left: node.position.x,
+                    top: node.position.y,
+                    transform: 'translate(-50%, -100%)',
+                    pointerEvents: 'none',
+                  }}
+                  className="flex items-center justify-center"
+                >
+                  <div
+                    className="w-16 h-16 rounded-full border-[6px] border-white shadow-2xl flex items-center justify-center"
+                    style={{ backgroundColor: node.data?.comment?.color || '#ff5e62' }}
+                  >
+                    <MessageSquare size={32} className="text-white fill-white" />
+                  </div>
+                </div>
+              );
+            }
+
+            if (node.type === 'groupNode') {
+              const styleWidth = node.style?.width || 450;
+              const styleHeight = node.style?.height || 350;
+              return (
+                <div
+                  key={node.id}
+                  style={{
+                    position: 'absolute',
+                    left: node.position.x,
+                    top: node.position.y,
+                    width: styleWidth,
+                    height: styleHeight,
+                    border: '6px dashed rgba(138, 43, 226, 0.7)',
+                    backgroundColor: 'rgba(138, 43, 226, 0.08)',
+                    borderRadius: '24px',
+                    pointerEvents: 'none',
+                  }}
+                />
+              );
+            }
+
+            if (node.type === 'newCommentNode') {
+              return null;
+            }
 
             return (
               <div

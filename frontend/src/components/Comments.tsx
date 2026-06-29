@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { MessageSquare, X, Send, MessageCircle, ChevronRight, ChevronUp, ChevronDown } from 'lucide-react';
+import { MessageSquare, X, Send, MessageCircle, ChevronRight, ChevronUp, ChevronDown, Trash2, Minus } from 'lucide-react';
 
 export interface CanvasComment {
   id: string;
@@ -9,6 +9,7 @@ export interface CanvasComment {
   author: string;
   createdAt: string;
   color: string;
+  isOpen?: boolean;
 }
 
 // React Flow Custom Node for comments
@@ -16,10 +17,11 @@ export const CommentNode: React.FC<{
   data: {
     comment: CanvasComment;
     onDelete: (id: string) => void;
+    onToggleOpen: (isOpenVal?: boolean) => void;
   };
 }> = ({ data }) => {
-  const { comment, onDelete } = data;
-  const [isOpen, setIsOpen] = useState(false);
+  const { comment, onDelete, onToggleOpen } = data;
+  const isOpen = comment.isOpen || false;
 
   return (
     <div 
@@ -31,7 +33,7 @@ export const CommentNode: React.FC<{
         className="comment-pin flex flex-col items-center cursor-pointer hover:scale-110 transition-transform duration-200"
         onClick={(e) => {
           e.stopPropagation();
-          setIsOpen(!isOpen);
+          onToggleOpen();
         }}
       >
         <div
@@ -65,18 +67,31 @@ export const CommentNode: React.FC<{
             <span className="font-bold text-workspace-100" style={{ color: comment.color }}>
               {comment.author}
             </span>
-            <div className="flex items-center space-x-1">
+            <div className="flex items-center space-x-1.5">
               <span className="text-workspace-600 text-[9px]">
                 {new Date(comment.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
               </span>
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onDelete(comment.id);
+                  onToggleOpen(false);
                 }}
-                className="text-workspace-600 hover:text-brand-coral transition-colors ml-1 cursor-pointer"
+                title="Minimize comment"
+                className="text-workspace-600 hover:text-workspace-200 transition-colors cursor-pointer p-0.5"
               >
-                <X size={11} />
+                <Minus size={11} />
+              </button>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (confirm("Delete this comment permanently?")) {
+                    onDelete(comment.id);
+                  }
+                }}
+                title="Delete comment"
+                className="text-workspace-600 hover:text-brand-coral transition-colors cursor-pointer p-0.5"
+              >
+                <Trash2 size={11} />
               </button>
             </div>
           </div>
@@ -179,6 +194,7 @@ interface CommentsPanelProps {
   onToggleMode: () => void;
   onDeleteComment: (id: string) => void;
   onFocusComment: (comment: CanvasComment) => void;
+  onToggleCommentOpen: (id: string, isOpen?: boolean) => void;
   expanded: boolean;
   onToggleExpanded: () => void;
 }
@@ -189,6 +205,7 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
   onToggleMode,
   onDeleteComment,
   onFocusComment,
+  onToggleCommentOpen,
   expanded,
   onToggleExpanded,
 }) => {
@@ -246,7 +263,10 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
                 {comments.map((c) => (
                   <button
                     key={c.id}
-                    onClick={() => onFocusComment(c)}
+                    onClick={() => {
+                      onFocusComment(c);
+                      onToggleCommentOpen(c.id, true);
+                    }}
                     className="w-full text-left p-2 rounded-lg bg-workspace-800 hover:bg-workspace-750 border border-workspace-750 hover:border-workspace-700 transition-all group flex flex-col cursor-pointer"
                   >
                     <div className="flex items-center justify-between w-full mb-1">
@@ -257,16 +277,28 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
                         />
                         <span className="text-[10px] font-bold text-workspace-200 font-mono truncate">{c.author}</span>
                       </div>
-                      <div className="flex items-center space-x-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <ChevronRight size={10} className="text-workspace-500" />
+                      <div className="flex items-center space-x-1.5 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            onDeleteComment(c.id);
+                            onToggleCommentOpen(c.id, false);
                           }}
+                          title="Minimize comment"
+                          className="text-workspace-600 hover:text-workspace-200 cursor-pointer p-0.5"
+                        >
+                          <Minus size={10} />
+                        </button>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (confirm("Delete this comment permanently?")) {
+                              onDeleteComment(c.id);
+                            }
+                          }}
+                          title="Delete comment"
                           className="text-workspace-600 hover:text-brand-coral cursor-pointer p-0.5"
                         >
-                          <X size={10} />
+                          <Trash2 size={10} />
                         </button>
                       </div>
                     </div>

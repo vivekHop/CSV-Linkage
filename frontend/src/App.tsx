@@ -23,6 +23,8 @@ import { GroupNode } from './components/GroupNode';
 import { CommentNode, NewCommentNode, CommentsPanel } from './components/Comments';
 import type { CanvasComment } from './components/Comments';
 import { ContextMenu } from './components/ContextMenu';
+import { CollaborativeCursors } from './components/CollaborativeCursors';
+import { CanvasHeader } from './components/CanvasHeader';
 import {
   Share2,
   Users,
@@ -114,6 +116,7 @@ export default function App() {
   // Comments system
   const [comments, setComments] = useState<CanvasComment[]>([]);
   const [isCommentMode, setIsCommentMode] = useState(false);
+  const [showComments, setShowComments] = useState(true);
   const [pendingComment, setPendingComment] = useState<{ screenX: number; screenY: number; canvasX: number; canvasY: number } | null>(null);
 
   // Right-click context menu
@@ -127,6 +130,12 @@ export default function App() {
   const [otherCursors, setOtherCursors] = useState<Record<string, { x: number; y: number; name: string; color: string; lastUpdate: number }>>({});
   const wsRef = useRef<WebSocket | null>(null);
   const canvasContainerRef = useRef<HTMLDivElement>(null);
+
+  // Keep a reference of comments state to avoid stale closures in ws.onmessage
+  const commentsRef = useRef<CanvasComment[]>([]);
+  useEffect(() => {
+    commentsRef.current = comments;
+  }, [comments]);
 
   // Smooth Resizers Drag handlers
   const startResizeLeft = useCallback((e: React.MouseEvent) => {
@@ -198,7 +207,26 @@ export default function App() {
         api.getActivities(30),
       ]);
 
-      setAssets(fetchedAssets);
+      // Split fetchedAssets into actual assets (tables/groups) and comments
+      const actualAssets = fetchedAssets.filter((a) => a.asset_type !== 'comment');
+      const commentAssets = fetchedAssets.filter((a) => a.asset_type === 'comment');
+
+      setAssets(actualAssets);
+      setComments((prevComments) => {
+        return commentAssets.map((a) => {
+          const existing = prevComments.find((c) => c.id === a.id);
+          return {
+            id: a.id,
+            x: a.custom_attributes?.x ?? 0,
+            y: a.custom_attributes?.y ?? 0,
+            text: a.description ?? '',
+            author: a.name ?? 'Unknown',
+            createdAt: a.custom_attributes?.createdAt ?? a.created_at ?? new Date().toISOString(),
+            color: a.custom_attributes?.color ?? '#ff5e62',
+            isOpen: existing ? existing.isOpen : false,
+          };
+        });
+      });
       setRelationships(fetchedRels);
       setActivities(fetchedActs);
       setBackendStatus('connected');
@@ -278,12 +306,9 @@ export default function App() {
             return;
           }
 
-          // Refresh data on CRUD events
+          // Refresh data on CRUD events (non-asset type changes)
           if (
             [
-              'asset_created',
-              'asset_updated',
-              'asset_deleted',
               'column_updated',
               'relationship_created',
               'relationship_deleted',
@@ -291,6 +316,74 @@ export default function App() {
             ].includes(event_type)
           ) {
             loadWorkspaceData(true);
+          }
+
+          // Handle asset creation selectively
+          if (event_type === 'asset_created') {
+            api.getAsset(data.id)
+              .then((newAsset) => {
+                if (newAsset.asset_type === 'comment') {
+                  const newComment: CanvasComment = {
+                    id: newAsset.id,
+                    x: newAsset.custom_attributes?.x ?? 0,
+                    y: newAsset.custom_attributes?.y ?? 0,
+                    text: newAsset.description ?? '',
+                    author: newAsset.name ?? 'Unknown',
+                    createdAt: newAsset.custom_attributes?.createdAt ?? newAsset.created_at ?? new Date().toISOString(),
+                    color: newAsset.custom_attributes?.color ?? '#ff5e62',
+                    isOpen: false,
+                  };
+                  setComments((prev) => {
+                    if (prev.some((c) => c.id === newComment.id)) return prev;
+                    return [...prev, newComment];
+                  });
+                } else {
+                  loadWorkspaceData(true);
+                }
+              })
+              .catch((err) => {
+                console.error("Failed to fetch new asset:", err);
+                loadWorkspaceData(true);
+              });
+          }
+
+          // Handle asset updates selectively
+          if (event_type === 'asset_updated') {
+            const updatedId = data.id;
+            const updates = data.updates || {};
+            const isComment = commentsRef.current.some((c) => c.id === updatedId);
+            
+            if (isComment) {
+              setComments((prev) =>
+                prev.map((c) => {
+                  if (c.id === updatedId) {
+                    const custom = updates.custom_attributes || {};
+                    return {
+                      ...c,
+                      x: custom.x !== undefined ? custom.x : c.x,
+                      y: custom.y !== undefined ? custom.y : c.y,
+                      text: updates.description !== undefined ? updates.description : c.text,
+                      color: custom.color !== undefined ? custom.color : c.color,
+                    };
+                  }
+                  return c;
+                })
+              );
+            } else {
+              loadWorkspaceData(true);
+            }
+          }
+
+          // Handle asset deletion selectively
+          if (event_type === 'asset_deleted') {
+            const deletedId = data.id;
+            const isComment = commentsRef.current.some((c) => c.id === deletedId);
+            
+            if (isComment) {
+              setComments((prev) => prev.filter((c) => c.id !== deletedId));
+            } else {
+              loadWorkspaceData(true);
+            }
           }
 
           // Append new activities
@@ -643,22 +736,67 @@ export default function App() {
   };
 
   // ─── Comments handlers ──────────────────────────────────────────────────
-  const handleAddCommentAt = (canvasX: number, canvasY: number, text: string) => {
+  const handleAddCommentAt = async (canvasX: number, canvasY: number, text: string) => {
+    setPendingComment(null);
+    setIsCommentMode(false);
+
+    // Generate a client-side temporary ID
+    const tempId = `cmt-temp-${Date.now()}`;
     const newComment: CanvasComment = {
-      id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: tempId,
       x: canvasX,
       y: canvasY,
       text,
       author: USER_NAME,
       createdAt: new Date().toISOString(),
       color: USER_COLOR,
+      isOpen: true, // Show instantly as open
     };
+
+    // Optimistically add comment to UI
     setComments((prev) => [...prev, newComment]);
-    setPendingComment(null);
+
+    try {
+      const commentAsset = {
+        name: USER_NAME,
+        asset_type: 'comment',
+        description: text,
+        version: 1,
+        custom_attributes: {
+          x: canvasX,
+          y: canvasY,
+          color: USER_COLOR,
+          createdAt: new Date().toISOString(),
+        },
+        columns: [],
+      };
+      const createdAsset = await api.createAsset(commentAsset);
+      // Promote temporary ID to permanent database UUID
+      setComments((prev) =>
+        prev.map((c) => (c.id === tempId ? { ...c, id: createdAsset.id } : c))
+      );
+    } catch (err) {
+      console.error('Failed to create comment:', err);
+      // Rollback on failure
+      setComments((prev) => prev.filter((c) => c.id !== tempId));
+    }
   };
 
-  const handleDeleteComment = (id: string) => {
+  const handleDeleteComment = async (id: string) => {
+    const deletedComment = comments.find((c) => c.id === id);
+
+    // Optimistically remove from UI
     setComments((prev) => prev.filter((c) => c.id !== id));
+
+    try {
+      await api.deleteAsset(id);
+    } catch (err) {
+      console.error('Failed to delete comment:', err);
+      // Rollback on failure
+      if (deletedComment) {
+        setComments((prev) => [...prev, deletedComment]);
+      }
+    }
   };
 
   const handleFocusComment = (comment: CanvasComment) => {
@@ -667,8 +805,36 @@ export default function App() {
     }
   };
 
-  const handleUpdateCommentPosition = (id: string, x: number, y: number) => {
+  const handleUpdateCommentPosition = async (id: string, x: number, y: number) => {
+    // Optimistically update position in UI
     setComments((prev) => prev.map((c) => (c.id === id ? { ...c, x, y } : c)));
+
+    try {
+      const commentNode = comments.find((c) => c.id === id);
+      if (!commentNode) return;
+
+      const updatedCustom = {
+        x,
+        y,
+        color: commentNode.color,
+        createdAt: commentNode.createdAt,
+      };
+
+      await api.updateAsset(id, { custom_attributes: updatedCustom });
+    } catch (err) {
+      console.error('Failed to update comment position:', err);
+    }
+  };
+
+  const handleToggleCommentOpen = (id: string, isOpenVal?: boolean) => {
+    setComments((prev) =>
+      prev.map((c) => {
+        if (c.id === id) {
+          return { ...c, isOpen: isOpenVal !== undefined ? isOpenVal : !c.isOpen };
+        }
+        return c;
+      })
+    );
   };
 
   // ─── Right-click context menu ────────────────────────────────────────────
@@ -995,19 +1161,22 @@ export default function App() {
       };
     });
 
-    // Add active comments as nodes
-    comments.forEach((comment) => {
-      flowNodes.push({
-        id: comment.id,
-        type: 'commentNode',
-        position: { x: comment.x, y: comment.y },
-        dragHandle: '.comment-pin',
-        data: {
-          comment,
-          onDelete: handleDeleteComment,
-        },
+    // Add active comments as nodes (if visible)
+    if (showComments) {
+      comments.forEach((comment) => {
+        flowNodes.push({
+          id: comment.id,
+          type: 'commentNode',
+          position: { x: comment.x, y: comment.y },
+          dragHandle: '.comment-pin',
+          data: {
+            comment,
+            onDelete: handleDeleteComment,
+            onToggleOpen: (isOpenVal?: boolean) => handleToggleCommentOpen(comment.id, isOpenVal),
+          },
+        });
       });
-    });
+    }
 
     // Add pending comment node
     if (pendingComment) {
@@ -1097,6 +1266,7 @@ export default function App() {
     connectingState,
     comments,
     pendingComment,
+    showComments,
   ]);
 
   // Asset/Column Selection triggers
@@ -1333,9 +1503,18 @@ export default function App() {
             onSelectAssetHeader={handleSelectAssetHeader}
             comments={comments}
             isCommentMode={isCommentMode}
-            onToggleCommentMode={() => setIsCommentMode((v) => !v)}
+            onToggleCommentMode={() => {
+              setIsCommentMode((v) => {
+                const nextVal = !v;
+                if (nextVal) {
+                  setShowComments(true);
+                }
+                return nextVal;
+              });
+            }}
             onDeleteComment={handleDeleteComment}
             onFocusComment={handleFocusComment}
+            onToggleCommentOpen={handleToggleCommentOpen}
           />
         </div>
       </div>
@@ -1350,37 +1529,11 @@ export default function App() {
       <main className="flex-1 flex flex-col min-w-0 h-full relative">
         
         {/* Workspace Canvas Header */}
-        <header className="h-14 border-b border-workspace-750 bg-workspace-850 px-6 flex items-center justify-between z-10 select-none shrink-0">
-          <div className="flex items-center space-x-2.5">
-            {backendStatus === 'connected' ? (
-              <>
-                <span className={`w-2 h-2 rounded-full bg-brand-emerald ${wsConnected ? 'animate-ping' : 'animate-pulse'}`} />
-                <span className="text-xs font-semibold text-workspace-200 font-mono">
-                  {wsConnected ? 'Shared Studio Session (Live)' : 'Shared Studio Session (Connecting sync...)'}
-                </span>
-              </>
-            ) : backendStatus === 'connecting' ? (
-              <>
-                <span className="w-2 h-2 rounded-full bg-yellow-500 animate-pulse" />
-                <span className="text-xs font-semibold text-workspace-300 font-mono">Connecting to backend...</span>
-              </>
-            ) : (
-              <>
-                <span className="w-2 h-2 rounded-full bg-brand-coral animate-pulse" />
-                <span className="text-xs font-semibold text-brand-coral font-mono">Offline (Retrying connection...)</span>
-              </>
-            )}
-          </div>
-          <div className="flex items-center space-x-4">
-            {/* Active User Badges */}
-            <div className="flex items-center space-x-1 bg-workspace-800 border border-workspace-750 px-2.5 py-1 rounded-lg">
-              <Users size={12} className="text-brand-teal" />
-              <span className="text-[10px] font-mono text-workspace-400 font-bold">
-                {Object.keys(otherCursors).length + 1} Active
-              </span>
-            </div>
-          </div>
-        </header>
+        <CanvasHeader
+          backendStatus={backendStatus}
+          wsConnected={wsConnected}
+          activeUsersCount={Object.keys(otherCursors).length + 1}
+        />
 
         {/* Canvas Area */}
         <div
@@ -1525,11 +1678,11 @@ export default function App() {
             <div className="flex items-center space-x-0.5 border-r border-workspace-750 pr-2">
               <button
                 onClick={() => {
-                  setIsCommentMode((v) => !v);
+                  setShowComments((v) => !v);
                 }}
-                title={isCommentMode ? 'Exit comment placement' : 'Click canvas to add comment'}
+                title={showComments ? 'Hide comments from canvas & minimap' : 'Show comments'}
                 className={`p-1.5 rounded-lg transition-colors cursor-pointer relative ${
-                  isCommentMode ? 'bg-brand-teal/20 text-brand-teal' : 'text-workspace-400 hover:text-workspace-100 hover:bg-workspace-800'
+                  showComments ? 'bg-brand-teal/20 text-brand-teal' : 'text-workspace-400 hover:text-workspace-100 hover:bg-workspace-800'
                 }`}
               >
                 <MessageSquare size={14} />
@@ -1613,51 +1766,7 @@ export default function App() {
           </ReactFlow>
 
           {/* FIGMA STYLE OTHER USERS CURSORS */}
-          {Object.entries(otherCursors).map(([id, cursor]) => {
-            const { x: vx, y: vy, zoom: vZoom } = getViewport();
-            // Project back from absolute canvas coordinate space to local screen space
-            const screenX = (cursor as any).x * vZoom + vx;
-            const screenY = (cursor as any).y * vZoom + vy;
-
-            // Hide cursor if it's out of bounds of the current viewport container
-            if (screenX < 0 || screenY < 0 || screenX > window.innerWidth || screenY > window.innerHeight) {
-              return null;
-            }
-
-            return (
-              <div
-                key={id}
-                className="absolute pointer-events-none z-30 transition-all duration-75"
-                style={{
-                  left: screenX,
-                  top: screenY,
-                }}
-              >
-                {/* Cursor SVG icon */}
-                <svg
-                  width="24"
-                  height="24"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  xmlns="http://www.w3.org/2000/svg"
-                >
-                  <path
-                    d="M5.5 3.21V19.12C5.5 19.68 6.13 19.98 6.57 19.62L11.53 15.54C11.77 15.34 12.09 15.24 12.41 15.26L18.42 15.65C18.99 15.69 19.39 15.08 19.14 14.56L12.35 4.54C12.05 4.1 11.45 4.09 11.14 4.52L5.86 3.25C5.7 3.21 5.5 3.21 5.5 3.21Z"
-                    fill={cursor.color}
-                    stroke="white"
-                    strokeWidth="1.5"
-                  />
-                </svg>
-                {/* Username tag */}
-                <div
-                  className="px-2 py-0.5 rounded-md text-[9px] font-bold text-workspace-950 font-mono shadow-md mt-1 ml-3"
-                  style={{ backgroundColor: cursor.color }}
-                >
-                  {cursor.name}
-                </div>
-              </div>
-            );
-          })}
+          <CollaborativeCursors otherCursors={otherCursors} />
 
 
         </div>
@@ -1677,6 +1786,7 @@ export default function App() {
             onGroup={handleGroupSelection}
             onDelete={handleDeleteSelected}
             onAddComment={() => {
+              setShowComments(true);
               setIsCommentMode(true);
               setPendingComment({
                 screenX: contextMenu.x,

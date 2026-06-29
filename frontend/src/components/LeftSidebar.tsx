@@ -19,6 +19,7 @@ interface LeftSidebarProps {
   onToggleCommentMode: () => void;
   onDeleteComment: (id: string) => void;
   onFocusComment: (comment: CanvasComment) => void;
+  onToggleCommentOpen: (id: string, isOpen?: boolean) => void;
 }
 
 export const LeftSidebar: React.FC<LeftSidebarProps> = ({
@@ -33,6 +34,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   onToggleCommentMode,
   onDeleteComment,
   onFocusComment,
+  onToggleCommentOpen,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResultItem[]>([]);
@@ -279,6 +281,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           onToggleMode={onToggleCommentMode}
           onDeleteComment={onDeleteComment}
           onFocusComment={onFocusComment}
+          onToggleCommentOpen={onToggleCommentOpen}
           expanded={commentsExpanded}
           onToggleExpanded={() => setCommentsExpanded(!commentsExpanded)}
         />
