@@ -41,6 +41,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   const [showSaveDraftPrompt, setShowSaveDraftPrompt] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [loadedDraftId, setLoadedDraftId] = useState<string | null>(null);
 
   // Levenshtein-based similarity matching (ratio from 0 to 100)
   const calcSimilarity = (s1: string, s2: string): number => {
@@ -74,6 +75,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   // Initialize data when modal opens
   useEffect(() => {
     if (isOpen) {
+      setLoadedDraftId(null);
       if (initialData && initialData.assets.length > 0) {
         setAssets(JSON.parse(JSON.stringify(initialData.assets)));
         setRelationships(JSON.parse(JSON.stringify(initialData.relationships)));
@@ -337,6 +339,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
     setShowDraftsList(false);
     setIsDirty(false); // Clean after loading saved draft
     setError(null);
+    setLoadedDraftId(draft.id);
     if (showToast) showToast('Loaded import draft.', 'success');
   };
 
@@ -385,6 +388,15 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
         assets: activeAssets,
         relationships: activeRelationships
       });
+
+      // If we loaded a saved draft, delete it from drafts since it is now persistent workspace data
+      if (loadedDraftId) {
+        try {
+          await api.deleteDraft(loadedDraftId);
+        } catch (err) {
+          console.error("Failed to delete draft on finalize:", err);
+        }
+      }
 
       onImportComplete();
     } catch (err: any) {

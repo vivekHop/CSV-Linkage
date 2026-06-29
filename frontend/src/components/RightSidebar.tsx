@@ -1290,20 +1290,6 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     />
                   </div>
 
-                  {incomingRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
-                    <div className="space-y-1">
-                      <label className="text-[10px] font-bold text-workspace-600 uppercase tracking-wider block">Expression / Formula</label>
-                      <FormulaInput
-                        value={columnFormula}
-                        onChange={setColumnFormula}
-                        assets={assets}
-                        currentAssetId={selectedAsset ? selectedAsset.id : null}
-                        placeholder="e.g., [TableA][ColA] + [TableB][ColB] * 1.5"
-                        rows={2}
-                      />
-                    </div>
-                  )}
-
                   {/* Column Tags */}
                   <div className="space-y-1.5">
                     <label className="text-[10px] font-bold text-workspace-600 uppercase tracking-wider block">Column Tags</label>
