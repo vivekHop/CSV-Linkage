@@ -1149,7 +1149,7 @@ export default function App() {
     selectedEdgeIds.forEach(id => activeSelectedEdgeIds.add(id));
 
     const activeSelectedAssetIds = new Set<string>();
-    if (selectedAssetId) activeSelectedAssetIds.add(selectedAssetId);
+    if (selectedAssetId && !selectedColumnId) activeSelectedAssetIds.add(selectedAssetId);
     selectedNodeIds.forEach(id => {
       const asset = allAssets.find(a => a.id === id);
       if (asset && asset.asset_type !== 'comment') {
