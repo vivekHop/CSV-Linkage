@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileSpreadsheet, Columns, User, Calendar, Plus, Trash2, Eye, Tag, FileClock, CheckCircle, Database } from 'lucide-react';
+import { FileSpreadsheet, Columns, User, Calendar, Plus, Trash2, Eye, Tag, FileClock, CheckCircle, Database, Loader2, AlertCircle } from 'lucide-react';
 import { api } from '../api';
 import type { Asset, Column, VersionHistory, Relationship } from '../types';
 
@@ -18,7 +18,213 @@ interface RightSidebarProps {
   assets?: Asset[];
   onClearSelection?: () => void;
   onDeleteRelationship?: (relId: string) => void;
+  showToast?: (message: string, type: 'info' | 'success' | 'warning' | 'error') => void;
 }
+
+const matchesTableName = (assetName: string, tableName: string): boolean => {
+  const nameLower = assetName.toLowerCase();
+  const queryLower = tableName.toLowerCase();
+  
+  if (nameLower === queryLower) return true;
+  
+  // Try to extract sheet name from brackets: e.g. "workbook.xlsx [Sheet1]" -> "Sheet1"
+  const bracketMatch = nameLower.match(/\[([^\]]+)\]/);
+  if (bracketMatch && bracketMatch[1].trim() === queryLower) {
+    return true;
+  }
+  
+  // Strip extensions like .csv, .xlsx, .ods, .tsv from the asset name
+  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/, '');
+  if (strippedName === queryLower) return true;
+  
+  // If the asset name without extension contains the table name as a whole word
+  if (strippedName.includes(queryLower)) return true;
+
+  return false;
+};
+
+interface FormulaInputProps {
+  value: string;
+  onChange: (val: string) => void;
+  assets: Asset[];
+  currentAssetId: string | null;
+  placeholder?: string;
+  rows?: number;
+}
+
+const FormulaInput: React.FC<FormulaInputProps> = ({
+  value,
+  onChange,
+  assets,
+  currentAssetId,
+  placeholder = "e.g., [Table1][Col1] + [Table2][Col2] * 1.5",
+  rows = 2
+}) => {
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [suggestions, setSuggestions] = useState<{ label: string; value: string; type: 'table' | 'column' }[]>([]);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [cursorPos, setCursorPos] = useState(0);
+  const textareaRef = React.useRef<HTMLTextAreaElement>(null);
+
+  const checkSuggestions = (text: string, position: number) => {
+    const textBeforeCursor = text.slice(0, position);
+    const lastOpenBracket = textBeforeCursor.lastIndexOf('[');
+    const lastCloseBracket = textBeforeCursor.lastIndexOf(']');
+    
+    if (lastOpenBracket !== -1 && lastOpenBracket > lastCloseBracket) {
+      const query = textBeforeCursor.slice(lastOpenBracket + 1);
+      const prefix = textBeforeCursor.slice(0, lastOpenBracket).trim();
+      const isColumnQuery = prefix.endsWith(']');
+      
+      if (isColumnQuery) {
+        // Find corresponding open bracket of the table name
+        const prevOpenBracket = prefix.lastIndexOf('[');
+        if (prevOpenBracket !== -1) {
+          const tableName = prefix.slice(prevOpenBracket + 1, prefix.length - 1).trim();
+          
+          // Find matching asset
+          const asset = assets.find(a => matchesTableName(a.name, tableName));
+          if (asset && asset.columns) {
+            const cols = asset.columns
+              .filter(c => c.name.toLowerCase().includes(query.toLowerCase()))
+              .map(c => ({
+                label: c.name,
+                value: c.name + ']',
+                type: 'column' as const
+              }));
+            setSuggestions(cols);
+            setActiveIndex(0);
+            setShowSuggestions(cols.length > 0);
+          } else {
+            setSuggestions([]);
+            setShowSuggestions(false);
+          }
+        } else {
+          setSuggestions([]);
+          setShowSuggestions(false);
+        }
+      } else {
+        // Typing a table name (only show tables)
+        const tableSuggestions = assets
+          .filter(a => a.asset_type !== 'group' && a.name.toLowerCase().includes(query.toLowerCase()))
+          .map(a => {
+            let cleanName = a.name;
+            const bracketMatch = a.name.match(/\[([^\]]+)\]/);
+            if (bracketMatch) {
+              cleanName = bracketMatch[1].trim();
+            } else {
+              // Strip extensions
+              cleanName = cleanName.replace(/\.(csv|xlsx|ods|tsv)$/i, '');
+            }
+            return {
+              label: cleanName,
+              value: cleanName + ']',
+              type: 'table' as const
+            };
+          });
+        setSuggestions(tableSuggestions);
+        setActiveIndex(0);
+        setShowSuggestions(tableSuggestions.length > 0);
+      }
+    } else {
+      setShowSuggestions(false);
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (showSuggestions && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setActiveIndex(prev => (prev + 1) % suggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setActiveIndex(prev => (prev - 1 + suggestions.length) % suggestions.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        selectSuggestion(suggestions[activeIndex]);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        setShowSuggestions(false);
+      }
+    }
+  };
+
+  const selectSuggestion = (suggestion: { label: string; value: string; type: 'table' | 'column' }) => {
+    if (!textareaRef.current) return;
+    const text = value;
+    const textBeforeCursor = text.slice(0, cursorPos);
+    const textAfterCursor = text.slice(cursorPos);
+    
+    const lastOpenBracket = textBeforeCursor.lastIndexOf('[');
+    const newTextBefore = textBeforeCursor.slice(0, lastOpenBracket + 1) + suggestion.value;
+    const newValue = newTextBefore + textAfterCursor;
+    
+    onChange(newValue);
+    setShowSuggestions(false);
+    
+    setTimeout(() => {
+      if (textareaRef.current) {
+        textareaRef.current.focus();
+        const newPos = newTextBefore.length;
+        textareaRef.current.setSelectionRange(newPos, newPos);
+      }
+    }, 0);
+  };
+
+  return (
+    <div className="relative w-full">
+      <textarea
+        ref={textareaRef}
+        rows={rows}
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value);
+          const pos = e.target.selectionStart;
+          setCursorPos(pos);
+          checkSuggestions(e.target.value, pos);
+        }}
+        onKeyUp={(e) => {
+          if (['ArrowLeft', 'ArrowRight', 'Click'].includes(e.key)) {
+            const pos = (e.target as HTMLTextAreaElement).selectionStart;
+            setCursorPos(pos);
+            checkSuggestions(value, pos);
+          }
+        }}
+        onKeyDown={handleKeyDown}
+        placeholder={placeholder}
+        className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-3 py-2 text-xs font-mono text-workspace-50 outline-none resize-none placeholder-workspace-600"
+      />
+      {showSuggestions && suggestions.length > 0 && (
+        <div className="absolute left-0 bottom-full mb-1 w-full max-h-44 overflow-y-auto bg-workspace-900 border border-workspace-700 rounded-lg shadow-xl z-50 p-1 divide-y divide-workspace-800">
+          <div className="px-2 py-1 text-[9px] font-bold text-workspace-500 uppercase tracking-wider font-mono">
+            Suggestions (Enter to select)
+          </div>
+          {suggestions.map((suggestion, idx) => (
+            <button
+              key={idx}
+              type="button"
+              onClick={() => selectSuggestion(suggestion)}
+              className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between text-xs font-mono transition-colors ${
+                idx === activeIndex
+                  ? 'bg-brand-teal/20 text-brand-teal font-bold'
+                  : 'text-workspace-200 hover:bg-workspace-800'
+              }`}
+            >
+              <span>{suggestion.label}</span>
+              <span className={`text-[9px] px-1.5 py-0.5 rounded uppercase font-bold tracking-wider ${
+                suggestion.type === 'table' 
+                  ? 'bg-brand-violet/10 text-brand-violet border border-brand-violet/20' 
+                  : 'bg-brand-teal/10 text-brand-teal border border-brand-teal/20'
+              }`}>
+                {suggestion.type}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
 
 export const RightSidebar: React.FC<RightSidebarProps> = ({
   selectedAsset,
@@ -33,6 +239,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   assets = [],
   onClearSelection,
   onDeleteRelationship,
+  showToast,
 }) => {
   const [activeTab, setActiveTab] = useState<'metadata' | 'versions'>('metadata');
   
@@ -52,6 +259,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const [columnNotes, setColumnNotes] = useState('');
   const [columnTags, setColumnTags] = useState<string[]>([]);
   const [newColumnTag, setNewColumnTag] = useState('');
+  const [columnFormula, setColumnFormula] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved' | 'error'>('idle');
 
   // Relationship state
   const [relDesc, setRelDesc] = useState('');
@@ -70,38 +280,53 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const [isLoadingVersions, setIsLoadingVersions] = useState(false);
   const [selectedVersionSnapshot, setSelectedVersionSnapshot] = useState<any>(null);
 
+  // Keep track of the currently loaded asset/column ID to prevent resetting user edits
+  const [prevAssetId, setPrevAssetId] = useState<string | null>(null);
+  const [prevColumnId, setPrevColumnId] = useState<string | null>(null);
+
   // Sync state when selection changes
   useEffect(() => {
     if (selectedAsset) {
-      setAssetName(selectedAsset.name || '');
-      setAssetOwner(selectedAsset.owner || '');
-      setAssetDesc(selectedAsset.description || '');
-      setAssetNotes(selectedAsset.notes || '');
-      setAssetTags(selectedAsset.tags || []);
-      
-      // Parse custom attributes
-      const customAttrs: Record<string, string> = {};
-      if (selectedAsset.custom_attributes) {
-        Object.entries(selectedAsset.custom_attributes).forEach(([k, v]) => {
-          customAttrs[k] = String(v);
-        });
+      if (selectedAsset.id !== prevAssetId) {
+        setAssetName(selectedAsset.name || '');
+        setAssetOwner(selectedAsset.owner || '');
+        setAssetDesc(selectedAsset.description || '');
+        setAssetNotes(selectedAsset.notes || '');
+        setAssetTags(selectedAsset.tags || []);
+        setPrevAssetId(selectedAsset.id);
+        
+        // Parse custom attributes
+        const customAttrs: Record<string, string> = {};
+        if (selectedAsset.custom_attributes) {
+          Object.entries(selectedAsset.custom_attributes).forEach(([k, v]) => {
+            customAttrs[k] = String(v);
+          });
+        }
+        setAssetCustom(customAttrs);
+        setActiveTab('metadata');
+        setSelectedVersionSnapshot(null);
+        
+        // Fetch version history
+        fetchVersionHistory(selectedAsset.id);
       }
-      setAssetCustom(customAttrs);
-      setActiveTab('metadata');
-      setSelectedVersionSnapshot(null);
-      
-      // Fetch version history
-      fetchVersionHistory(selectedAsset.id);
+    } else {
+      setPrevAssetId(null);
     }
-  }, [selectedAsset]);
+  }, [selectedAsset, prevAssetId]);
 
   useEffect(() => {
     if (selectedColumn) {
-      setColumnDesc(selectedColumn.description || '');
-      setColumnNotes(selectedColumn.notes || '');
-      setColumnTags(selectedColumn.tags || []);
+      if (selectedColumn.id !== prevColumnId) {
+        setColumnDesc(selectedColumn.description || '');
+        setColumnNotes(selectedColumn.notes || '');
+        setColumnTags(selectedColumn.tags || []);
+        setColumnFormula(selectedColumn.custom_attributes?.formula || '');
+        setPrevColumnId(selectedColumn.id);
+      }
+    } else {
+      setPrevColumnId(null);
     }
-  }, [selectedColumn]);
+  }, [selectedColumn, prevColumnId]);
 
   useEffect(() => {
     if (selectedEdgeId && relationships.length > 0) {
@@ -125,9 +350,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   };
 
   // Save Handlers
-  const handleSaveAsset = () => {
+  const handleSaveAsset = async () => {
     if (!selectedAsset) return;
-    onUpdateAsset(selectedAsset.id, {
+    setIsSaving(true);
+    setSaveStatus('saving');
+    
+    const savePromise = onUpdateAsset(selectedAsset.id, {
       name: assetName,
       owner: assetOwner,
       description: assetDesc,
@@ -135,28 +363,154 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
       tags: assetTags,
       custom_attributes: assetCustom,
     });
+
+    if (showToast) {
+      showToast('Saving table metadata...', 'info');
+    }
+
+    setTimeout(() => {
+      setSaveStatus('saved');
+      setIsSaving(false);
+      setTimeout(() => setSaveStatus('idle'), 2000);
+      if (showToast) {
+        showToast('Table metadata saved successfully!', 'success');
+      }
+    }, 200);
+
+    try {
+      await savePromise;
+    } catch (err) {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+      if (showToast) {
+        showToast('Failed to save table metadata.', 'error');
+      }
+    }
   };
 
-  const handleSaveColumn = () => {
+  const handleSaveColumn = async () => {
     if (!selectedColumn) return;
-    onUpdateColumn(selectedColumn.id, {
+    setIsSaving(true);
+    setSaveStatus('saving');
+
+    const savePromise = onUpdateColumn(selectedColumn.id, {
       description: columnDesc,
       notes: columnNotes,
       tags: columnTags,
+      custom_attributes: {
+        ...(selectedColumn.custom_attributes || {}),
+        formula: columnFormula,
+      },
     });
+
+    if (showToast) {
+      showToast('Saving column metadata...', 'info');
+    }
+
+    setTimeout(() => {
+      setSaveStatus('saved');
+      setIsSaving(false);
+      setTimeout(() => setSaveStatus('idle'), 2000);
+      if (showToast) {
+        showToast('Column metadata saved successfully!', 'success');
+      }
+    }, 200);
+
+    try {
+      await savePromise;
+    } catch (err) {
+      setSaveStatus('error');
+      setTimeout(() => setSaveStatus('idle'), 3000);
+      if (showToast) {
+        showToast('Failed to save column metadata.', 'error');
+      }
+    }
   };
 
-  const handleSaveRelationship = () => {
+  const handleSaveRelationship = async () => {
     if (!selectedEdgeId || !onUpdateRelationship) return;
     const rel = relationships.find((r) => r.id === selectedEdgeId);
     if (rel) {
-      onUpdateRelationship(selectedEdgeId, {
+      setIsSaving(true);
+      setSaveStatus('saving');
+
+      const savePromise = onUpdateRelationship(selectedEdgeId, {
         metadata_json: {
           ...rel.metadata_json,
           description: relDesc,
         },
       });
+
+      if (showToast) {
+        showToast('Saving relationship metadata...', 'info');
+      }
+
+      setTimeout(() => {
+        setSaveStatus('saved');
+        setIsSaving(false);
+        setTimeout(() => setSaveStatus('idle'), 2000);
+        if (showToast) {
+          showToast('Relationship metadata saved successfully!', 'success');
+        }
+      }, 200);
+
+      try {
+        await savePromise;
+      } catch (err) {
+        setSaveStatus('error');
+        setTimeout(() => setSaveStatus('idle'), 3000);
+        if (showToast) {
+          showToast('Failed to save relationship metadata.', 'error');
+        }
+      }
     }
+  };
+
+  const getSaveButtonClass = () => {
+    const base = "w-full font-bold py-2 rounded-lg flex items-center justify-center space-x-2 transition-all duration-300 cursor-pointer ";
+    if (saveStatus === 'saving') {
+      return base + "bg-brand-teal/40 text-workspace-300 cursor-wait border border-workspace-700";
+    }
+    if (saveStatus === 'saved') {
+      return base + "bg-brand-emerald hover:bg-brand-emerald/90 text-workspace-950 shadow-lg shadow-brand-emerald/20 border border-brand-emerald/40";
+    }
+    if (saveStatus === 'error') {
+      return base + "bg-brand-coral hover:bg-brand-coral/90 text-workspace-950 shadow-lg shadow-brand-coral/20 border border-brand-coral/40";
+    }
+    return base + "bg-brand-teal hover:bg-brand-teal/90 text-workspace-950 shadow-glow-teal border border-brand-teal/40";
+  };
+
+  const renderSaveButtonContent = (defaultText: string) => {
+    if (saveStatus === 'saving') {
+      return (
+        <>
+          <Loader2 className="animate-spin text-brand-teal" size={15} />
+          <span>Saving to Database...</span>
+        </>
+      );
+    }
+    if (saveStatus === 'saved') {
+      return (
+        <>
+          <CheckCircle size={15} />
+          <span>Changes Saved!</span>
+        </>
+      );
+    }
+    if (saveStatus === 'error') {
+      return (
+        <>
+          <AlertCircle size={15} />
+          <span>Error Saving!</span>
+        </>
+      );
+    }
+    return (
+      <>
+        <CheckCircle size={15} />
+        <span>{defaultText}</span>
+      </>
+    );
   };
 
   // Tags Management
@@ -298,9 +652,30 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                 </div>
                 <button
                   onClick={handleSaveRelationship}
-                  className="w-full bg-brand-emerald text-workspace-950 font-bold py-2 rounded-lg hover:bg-brand-emerald-400 transition-all shadow-lg shadow-brand-emerald/10 cursor-pointer"
+                  disabled={isSaving}
+                  className="w-full font-bold py-2 rounded-lg flex items-center justify-center space-x-2 transition-all duration-300 cursor-pointer bg-brand-emerald hover:bg-brand-emerald/90 text-workspace-950 shadow-lg shadow-brand-emerald/20 border border-brand-emerald/40 disabled:bg-workspace-750 disabled:text-workspace-500 disabled:cursor-wait"
                 >
-                  Save Annotation
+                  {saveStatus === 'saving' ? (
+                    <>
+                      <Loader2 className="animate-spin text-workspace-950" size={15} />
+                      <span>Saving to Database...</span>
+                    </>
+                  ) : saveStatus === 'saved' ? (
+                    <>
+                      <CheckCircle size={15} />
+                      <span>Changes Saved!</span>
+                    </>
+                  ) : saveStatus === 'error' ? (
+                    <>
+                      <AlertCircle size={15} />
+                      <span>Error Saving!</span>
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle size={15} />
+                      <span>Save Annotation</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
@@ -679,10 +1054,10 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
                 <button
                   onClick={handleSaveAsset}
-                  className="w-full bg-brand-teal hover:bg-brand-teal/80 text-workspace-950 font-bold py-2 rounded-lg flex items-center justify-center space-x-2 shadow-glow-teal transition-all"
+                  disabled={isSaving}
+                  className={getSaveButtonClass()}
                 >
-                  <CheckCircle size={15} />
-                  <span>Save Metadata (v{selectedAsset.version})</span>
+                  {renderSaveButtonContent(`Save Metadata (v${selectedAsset.version})`)}
                 </button>
               </div>
             )}
@@ -844,10 +1219,18 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                             <select
                               value={rel.relationship_type || ''}
                               onChange={(e) => {
+                                const newType = e.target.value as any;
                                 if (onUpdateRelationship) {
-                                  onUpdateRelationship(rel.id, {
-                                    relationship_type: e.target.value as any || null,
-                                  });
+                                  const updates: Partial<Relationship> = {
+                                    relationship_type: newType || null,
+                                  };
+                                  if (newType === 'DERIVES_FROM') {
+                                    updates.metadata_json = {
+                                      ...(rel.metadata_json || {}),
+                                      formula: rel.metadata_json?.formula || columnFormula || ''
+                                    };
+                                  }
+                                  onUpdateRelationship(rel.id, updates);
                                 }
                               }}
                               className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-2 py-1 text-xs text-workspace-50 outline-none"
@@ -862,6 +1245,25 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                         );
                       })}
                     </div>
+
+                    {incomingRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
+                      <div className="mt-3 space-y-1.5 p-3 bg-workspace-900 border border-workspace-750 rounded-xl">
+                        <label className="text-[10px] font-bold text-brand-teal uppercase tracking-wider block font-mono">
+                          Derivation Formula / Expression
+                        </label>
+                        <FormulaInput
+                          value={columnFormula}
+                          onChange={setColumnFormula}
+                          assets={assets}
+                          currentAssetId={selectedAsset ? selectedAsset.id : null}
+                          placeholder="e.g., [TableA][ColA] + [TableB][ColB] * 1.5"
+                          rows={2}
+                        />
+                        <span className="text-[9px] text-workspace-500 font-mono block leading-normal mt-1">
+                          Define how this column is calculated from its sources. Use <code className="text-brand-teal bg-workspace-800 px-1 py-0.5 rounded">[Table][Column]</code> format.
+                        </span>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -887,6 +1289,20 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                       className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-3 py-1.5 text-xs text-workspace-50 outline-none resize-none placeholder-workspace-600"
                     />
                   </div>
+
+                  {incomingRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
+                    <div className="space-y-1">
+                      <label className="text-[10px] font-bold text-workspace-600 uppercase tracking-wider block">Expression / Formula</label>
+                      <FormulaInput
+                        value={columnFormula}
+                        onChange={setColumnFormula}
+                        assets={assets}
+                        currentAssetId={selectedAsset ? selectedAsset.id : null}
+                        placeholder="e.g., [TableA][ColA] + [TableB][ColB] * 1.5"
+                        rows={2}
+                      />
+                    </div>
+                  )}
 
                   {/* Column Tags */}
                   <div className="space-y-1.5">
@@ -920,10 +1336,10 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
                 <button
                   onClick={handleSaveColumn}
-                  className="w-full bg-brand-teal hover:bg-brand-teal/80 text-workspace-950 font-bold py-2 rounded-lg flex items-center justify-center space-x-2 shadow-glow-teal transition-all"
+                  disabled={isSaving}
+                  className={getSaveButtonClass()}
                 >
-                  <CheckCircle size={15} />
-                  <span>Save Column Metadata</span>
+                  {renderSaveButtonContent('Save Column Metadata')}
                 </button>
               </div>
             )}

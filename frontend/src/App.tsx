@@ -44,6 +44,9 @@ import {
   Download,
   MessageSquare,
   XCircle,
+  CheckCircle,
+  AlertCircle,
+  AlertTriangle,
 } from 'lucide-react';
 
 // Custom node & edge registry
@@ -73,6 +76,131 @@ const getDeterministicColor = (str: string) => {
   return `hsl(${hue}, 85%, 65%)`;
 };
 
+// Helper to check if an asset name matches a reference table/sheet name case-insensitively
+const matchesTableName = (assetName: string, tableName: string): boolean => {
+  const nameLower = assetName.toLowerCase();
+  const queryLower = tableName.toLowerCase();
+  
+  if (nameLower === queryLower) return true;
+  
+  // Try to extract sheet name from brackets: e.g. "workbook.xlsx [Sheet1]" -> "Sheet1"
+  const bracketMatch = nameLower.match(/\[([^\]]+)\]/);
+  if (bracketMatch && bracketMatch[1].trim() === queryLower) {
+    return true;
+  }
+  
+  // Strip extensions like .csv, .xlsx, .ods, .tsv from the asset name
+  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/, '');
+  if (strippedName === queryLower) return true;
+  
+  // If the asset name without extension contains the table name as a whole word
+  if (strippedName.includes(queryLower)) return true;
+
+  return false;
+};
+
+// Helper to find all column IDs referenced in a formula expression
+const findReferencedColumnIds = (
+  expression: string,
+  destAssetId: string,
+  allAssets: Asset[]
+): string[] => {
+  const referencedIds: string[] = [];
+  let cleanedExpr = expression;
+
+  // 1. Search for [tableName][colName] pattern first
+  const doubleBracketRegex = /\[([^\]]+)\]\s*\[([^\]]+)\]/g;
+  let match;
+  while ((match = doubleBracketRegex.exec(expression)) !== null) {
+    const tableName = match[1].trim().toLowerCase();
+    const colName = match[2].trim().toLowerCase();
+    
+    const asset = allAssets.find(a => matchesTableName(a.name, tableName));
+    
+    if (asset) {
+      const col = asset.columns?.find(c => c.name.toLowerCase() === colName);
+      if (col) {
+        referencedIds.push(col.id);
+      }
+    }
+    // Remove to avoid double matching
+    cleanedExpr = cleanedExpr.replace(match[0], '');
+  }
+
+  // 2. Search for [ref] pattern (can be [table.col] or just [col])
+  const singleBracketRegex = /\[([^\]]+)\]/g;
+  while ((match = singleBracketRegex.exec(cleanedExpr)) !== null) {
+    const ref = match[1].trim();
+    if (ref.includes('.')) {
+      const parts = ref.split('.');
+      const tableName = parts[0].trim().toLowerCase();
+      const colName = parts[1].trim().toLowerCase();
+      
+      const asset = allAssets.find(a => matchesTableName(a.name, tableName));
+      
+      if (asset) {
+        const col = asset.columns?.find(c => c.name.toLowerCase() === colName);
+        if (col) {
+          referencedIds.push(col.id);
+        }
+      }
+    } else {
+      const asset = allAssets.find(a => a.id === destAssetId);
+      if (asset) {
+        const col = asset.columns?.find(c => c.name.toLowerCase() === ref.toLowerCase());
+        if (col) {
+          referencedIds.push(col.id);
+        }
+      }
+    }
+  }
+  
+  return Array.from(new Set(referencedIds));
+};
+
+// Helper to remove a column reference from a formula string and clean up mathematical operators
+const removeReferenceFromFormula = (formula: string, refName: string): string => {
+  let cleaned = formula;
+  if (refName.includes('.')) {
+    const parts = refName.split('.');
+    const table = parts[0].replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const col = parts[1].replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    
+    cleaned = cleaned.replace(new RegExp(`\\[\\s*${table}\\s*\\]\\s*\\[\\s*${col}\\s*\\]`, 'gi'), '');
+    cleaned = cleaned.replace(new RegExp(`\\[\\s*${table}\\.${col}\\s*\\]`, 'gi'), '');
+  } else {
+    const escapedRef = refName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    cleaned = cleaned.replace(new RegExp(`\\[\\s*${escapedRef}\\s*\\]`, 'gi'), '');
+  }
+  
+  cleaned = cleaned
+    .replace(/\s*[\+\-\*\/]\s*(?=[\+\-\*\/])/g, '')
+    .replace(/^\s*[\+\-\*\/]\s*/, '')
+    .replace(/\s*[\+\-\*\/]\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+    
+  return cleaned;
+};
+
+// Helper to remove all column references of a specific table from a formula string
+const removeTableReferencesFromFormula = (formula: string, tableName: string): string => {
+  const escapedTable = tableName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  // Removes: [table.col]
+  let newFormula = formula.replace(new RegExp(`\\[\\s*${escapedTable}\\.[^\\]]+\\s*\\]`, 'gi'), '');
+  // Removes: [table][col]
+  newFormula = newFormula.replace(new RegExp(`\\[\\s*${escapedTable}\\s*\\]\\s*\\[[^\\]]+\\]`, 'gi'), '');
+  
+  newFormula = newFormula
+    .replace(/\s*[\+\-\*\/]\s*(?=[\+\-\*\/])/g, '')
+    .replace(/^\s*[\+\-\*\/]\s*/, '')
+    .replace(/\s*[\+\-\*\/]\s*$/, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+    
+  return newFormula;
+};
+
 export default function App() {
   const [assets, setAssets] = useState<Asset[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -80,6 +208,17 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(true);
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [wsConnected, setWsConnected] = useState(false);
+
+  // Toast notifications
+  const [toasts, setToasts] = useState<{ id: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }[]>([]);
+
+  const showToast = useCallback((message: string, type: 'info' | 'success' | 'warning' | 'error' = 'info') => {
+    const id = Math.random().toString(36).substring(2, 9);
+    setToasts((prev) => [...prev, { id, type, message }]);
+    setTimeout(() => {
+      setToasts((prev) => prev.filter((t) => t.id !== id));
+    }, 4000);
+  }, []);
 
   // Selection states
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -1407,8 +1546,32 @@ export default function App() {
       const originalAssets = assets;
       const originalRels = relationships;
 
-      // Optimistically remove asset and associated relationships from state
-      setAssets((prev) => prev.filter((a) => a.id !== assetId));
+      // Optimistically remove asset, scrub table references from other formulas, and remove relationships from state
+      setAssets((prev) =>
+        prev
+          .filter((a) => a.id !== assetId)
+          .map((a) => {
+            if (!a.columns) return a;
+            return {
+              ...a,
+              columns: a.columns.map((col) => {
+                const formula = col.custom_attributes?.formula;
+                if (formula) {
+                  const updatedFormula = removeTableReferencesFromFormula(formula, asset.name);
+                  if (updatedFormula !== formula) {
+                    const updatedCustom = {
+                      ...(col.custom_attributes || {}),
+                      formula: updatedFormula,
+                    };
+                    api.updateColumn(col.id, { custom_attributes: updatedCustom }).catch(console.error);
+                    return { ...col, custom_attributes: updatedCustom };
+                  }
+                }
+                return col;
+              }),
+            };
+          })
+      );
       setRelationships((prev) => prev.filter((r) => r.source_node_id !== assetId && r.destination_node_id !== assetId));
       if (selectedAssetId === assetId) {
         setSelectedAssetId(null);
@@ -1445,13 +1608,36 @@ export default function App() {
       const originalAssets = assets;
       const originalRels = relationships;
 
-      // Optimistically remove the column from the asset and remove associated relationships
+      // Optimistically remove the column from the asset, clean up its formula references, and remove relationships
       setAssets((prev) =>
-        prev.map((asset) => ({
-          ...asset,
-          columns: asset.columns ? asset.columns.filter((c) => c.id !== columnId) : [],
-          column_count: asset.columns ? asset.columns.filter((c) => c.id !== columnId).length : 0,
-        }))
+        prev.map((asset) => {
+          const isTargetAsset = asset.columns?.some(c => c.id === columnId);
+          const filteredCols = asset.columns ? asset.columns.filter((c) => c.id !== columnId) : [];
+          
+          return {
+            ...asset,
+            columns: filteredCols.map((col) => {
+              const formula = col.custom_attributes?.formula;
+              if (formula) {
+                const isSameTable = asset.name === assetName;
+                let updatedFormula = removeReferenceFromFormula(formula, `${assetName}.${colName}`);
+                if (isSameTable) {
+                  updatedFormula = removeReferenceFromFormula(updatedFormula, colName);
+                }
+                if (updatedFormula !== formula) {
+                  const updatedCustom = {
+                    ...(col.custom_attributes || {}),
+                    formula: updatedFormula,
+                  };
+                  api.updateColumn(col.id, { custom_attributes: updatedCustom }).catch(console.error);
+                  return { ...col, custom_attributes: updatedCustom };
+                }
+              }
+              return col;
+            }),
+            column_count: isTargetAsset ? filteredCols.length : (asset.columns ? asset.columns.length : 0),
+          };
+        })
       );
       setRelationships((prev) =>
         prev.filter((r) => r.source_node_id !== columnId && r.destination_node_id !== columnId)
@@ -1505,7 +1691,119 @@ export default function App() {
 
   const handleUpdateColumn = async (columnId: string, updates: Partial<Column>) => {
     const originalAssets = assets;
-    
+    const originalRels = relationships;
+
+    // Check if formula is updated
+    if (updates.custom_attributes && 'formula' in updates.custom_attributes) {
+      const newFormula = updates.custom_attributes.formula || '';
+      
+      // Find the asset of this column
+      const parentAsset = assets.find(a => a.columns?.some(c => c.id === columnId));
+      if (parentAsset) {
+        const referencedColIds = findReferencedColumnIds(newFormula, parentAsset.id, assets);
+        
+        // Find existing DERIVES_FROM relationships to this destination column
+        const existingRels = relationships.filter(
+          r => r.destination_node_type === 'column' && 
+               r.destination_node_id === columnId && 
+               r.relationship_type === 'DERIVES_FROM'
+        );
+        
+        const existingSourceIds = existingRels.map(r => r.source_node_id);
+        
+        // Relationships to delete
+        const relsToDelete = existingRels.filter(r => !referencedColIds.includes(r.source_node_id));
+        // Relationships to create
+        const sourceIdsToCreate = referencedColIds.filter(id => !existingSourceIds.includes(id));
+        // Relationships to update (existing ones that are still referenced)
+        const relsToUpdate = existingRels.filter(r => referencedColIds.includes(r.source_node_id));
+        
+        if (relsToDelete.length > 0 || sourceIdsToCreate.length > 0 || relsToUpdate.length > 0) {
+          // Perform optimistic relationship update
+          setRelationships(prev => {
+            let updated = prev.filter(r => !relsToDelete.some(td => td.id === r.id));
+            
+            // Update formula for existing ones
+            updated = updated.map(r => {
+              if (relsToUpdate.some(tu => tu.id === r.id)) {
+                return {
+                  ...r,
+                  metadata_json: {
+                    ...(r.metadata_json || {}),
+                    formula: newFormula
+                  }
+                };
+              }
+              return r;
+            });
+
+            sourceIdsToCreate.forEach(srcId => {
+              const tempId = `temp_rel_${Math.random().toString(36).substring(2, 9)}`;
+              updated.push({
+                id: tempId,
+                source_node_type: 'column',
+                source_node_id: srcId,
+                destination_node_type: 'column',
+                destination_node_id: columnId,
+                relationship_type: 'DERIVES_FROM',
+                metadata_json: { formula: newFormula },
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString(),
+              });
+            });
+            
+            return updated;
+          });
+          
+          // Send background updates to server
+          relsToDelete.forEach(async (r) => {
+            try {
+              await api.deleteRelationship(r.id);
+            } catch (err) {
+              console.error('Failed to delete relationship in background:', err);
+            }
+          });
+          
+          sourceIdsToCreate.forEach(async (srcId) => {
+            try {
+              const created = await api.createRelationship({
+                source_node_type: 'column',
+                source_node_id: srcId,
+                destination_node_type: 'column',
+                destination_node_id: columnId,
+                relationship_type: 'DERIVES_FROM',
+                metadata_json: { formula: newFormula }
+              });
+              setRelationships((prev) =>
+                prev.map((r) =>
+                  r.source_node_id === srcId &&
+                  r.destination_node_id === columnId &&
+                  r.id.startsWith('temp_rel_')
+                    ? created
+                    : r
+                )
+              );
+            } catch (err) {
+              console.error('Failed to create relationship in background:', err);
+            }
+          });
+
+          relsToUpdate.forEach(async (r) => {
+            try {
+              await api.updateRelationship(r.id, {
+                metadata_json: {
+                  ...(r.metadata_json || {}),
+                  formula: newFormula
+                }
+              });
+            } catch (err) {
+              console.error('Failed to update relationship in background:', err);
+            }
+          });
+        }
+      }
+    }
+
     setAssets((prev) =>
       prev.map((asset) => {
         const hasCol = asset.columns?.some((c) => c.id === columnId);
@@ -1514,7 +1812,12 @@ export default function App() {
             ...asset,
             columns: asset.columns.map((col) => {
               if (col.id === columnId) {
-                return { ...col, ...updates };
+                // Merge custom attributes correctly
+                const mergedAttributes = {
+                  ...(col.custom_attributes || {}),
+                  ...(updates.custom_attributes || {}),
+                };
+                return { ...col, ...updates, custom_attributes: mergedAttributes };
               }
               return col;
             }),
@@ -1531,6 +1834,7 @@ export default function App() {
     } catch (err) {
       // Revert on failure
       setAssets(originalAssets);
+      setRelationships(originalRels);
       alert('Failed to save column annotations.');
     }
   };
@@ -1629,27 +1933,144 @@ export default function App() {
   const handleDeleteRelationship = async (relId: string) => {
     saveUndoState();
     const originalRels = relationships;
+    const originalAssets = assets;
+    
+    // Find relationship details before deleting
+    const rel = relationships.find((r) => r.id === relId);
+    
     // Optimistically remove
     setRelationships((prev) => prev.filter((r) => r.id !== relId));
     if (selectedEdgeId === relId) {
       setSelectedEdgeId(null);
     }
+
+    // If the relationship is a DERIVES_FROM relationship, update formula references in destination column
+    if (
+      rel &&
+      rel.relationship_type === 'DERIVES_FROM' &&
+      rel.source_node_type === 'column' &&
+      rel.destination_node_type === 'column'
+    ) {
+      const srcCol = assets.flatMap((a) => a.columns || []).find((c) => c.id === rel.source_node_id);
+      const srcAsset = assets.find((a) => a.columns?.some((c) => c.id === rel.source_node_id));
+      const destCol = assets.flatMap((a) => a.columns || []).find((c) => c.id === rel.destination_node_id);
+      
+      if (srcCol && destCol && srcAsset) {
+        const currentFormula = destCol.custom_attributes?.formula || '';
+        let updatedFormula = removeReferenceFromFormula(currentFormula, `${srcAsset.name}.${srcCol.name}`);
+        updatedFormula = removeReferenceFromFormula(updatedFormula, srcCol.name);
+        
+        if (updatedFormula !== currentFormula) {
+          const updatedCustom = {
+            ...(destCol.custom_attributes || {}),
+            formula: updatedFormula,
+          };
+          
+          // Optimistically update asset's column custom_attributes in state
+          setAssets((prev) =>
+            prev.map((asset) => {
+              if (asset.columns?.some((c) => c.id === destCol.id)) {
+                return {
+                  ...asset,
+                  columns: asset.columns.map((col) =>
+                    col.id === destCol.id ? { ...col, custom_attributes: updatedCustom } : col
+                  ),
+                };
+              }
+              return asset;
+            })
+          );
+          
+          // Persist update in background
+          try {
+            await api.updateColumn(destCol.id, { custom_attributes: updatedCustom });
+          } catch (err) {
+            console.error('Failed to update column formula in background:', err);
+          }
+        }
+      }
+    }
+
     try {
       await api.deleteRelationship(relId);
       api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {
       console.error('Failed to delete relationship:', err);
       setRelationships(originalRels);
+      setAssets(originalAssets);
     }
   };
 
   const handleUpdateRelationship = async (relId: string, updates: Partial<Relationship>) => {
     saveUndoState();
+    const originalRels = relationships;
+    const originalAssets = assets;
+
+    // Find the relationship details before updating
+    const rel = relationships.find(r => r.id === relId);
+
+    // Optimistically update relationship state
+    setRelationships((prev) =>
+      prev.map((r) =>
+        r.id === relId
+          ? {
+              ...r,
+              ...updates,
+              metadata_json: {
+                ...(r.metadata_json || {}),
+                ...(updates.metadata_json || {}),
+              },
+            }
+          : r
+      )
+    );
+
+    // If formula is updated in relationship metadata, propagate to destination column formula
+    if (updates.metadata_json && 'formula' in updates.metadata_json && rel && rel.destination_node_type === 'column') {
+      const newFormula = updates.metadata_json.formula || '';
+      
+      setAssets((prev) =>
+        prev.map((asset) => {
+          if (asset.columns?.some((c) => c.id === rel.destination_node_id)) {
+            return {
+              ...asset,
+              columns: asset.columns.map((col) => {
+                if (col.id === rel.destination_node_id) {
+                  return {
+                    ...col,
+                    custom_attributes: {
+                      ...(col.custom_attributes || {}),
+                      formula: newFormula
+                    }
+                  };
+                }
+                return col;
+              })
+            };
+          }
+          return asset;
+        })
+      );
+      
+      // Update column formula in the background
+      const existingCol = originalAssets.flatMap(a => a.columns || []).find(c => c.id === rel.destination_node_id);
+      if (existingCol) {
+        api.updateColumn(rel.destination_node_id, {
+          custom_attributes: {
+            ...(existingCol.custom_attributes || {}),
+            formula: newFormula
+          }
+        }).catch(console.error);
+      }
+    }
+
     try {
       await api.updateRelationship(relId, updates);
-      loadWorkspaceData();
+      api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {
       console.error('Failed to update relationship:', err);
+      setRelationships(originalRels);
+      setAssets(originalAssets);
     }
   };
 
@@ -2040,6 +2461,7 @@ export default function App() {
           assets={assets}
           onClearSelection={onPaneClick}
           onDeleteRelationship={handleDeleteRelationship}
+          showToast={showToast}
         />
       </div>
 
@@ -2053,9 +2475,35 @@ export default function App() {
           setIsPreviewOpen(false);
           setPreviewData(undefined);
           loadWorkspaceData();
+          showToast('Import completed successfully!', 'success');
         }}
         initialData={previewData}
+        showToast={showToast}
       />
+
+      {/* Toast Notification Container */}
+      <div className="fixed top-5 right-5 z-[9999] flex flex-col space-y-3 pointer-events-none">
+        {toasts.map(t => (
+          <div
+            key={t.id}
+            className={`pointer-events-auto flex items-center space-x-3 px-4 py-2.5 rounded-xl border backdrop-blur-xl transition-all duration-300 shadow-xl max-w-sm ${
+              t.type === 'success'
+                ? 'bg-brand-emerald/10 border-brand-emerald/30 text-brand-emerald shadow-brand-emerald/5'
+                : t.type === 'error'
+                ? 'bg-brand-coral/10 border-brand-coral/30 text-brand-coral shadow-brand-coral/5'
+                : t.type === 'warning'
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-400 shadow-amber-500/5'
+                : 'bg-workspace-900/90 border-workspace-750 text-workspace-200 shadow-black/40'
+            }`}
+          >
+            {t.type === 'success' && <CheckCircle size={16} className="shrink-0 text-brand-emerald" />}
+            {t.type === 'error' && <XCircle size={16} className="shrink-0 text-brand-coral" />}
+            {t.type === 'warning' && <AlertTriangle size={16} className="shrink-0 text-amber-400" />}
+            {t.type === 'info' && <Loader2 size={16} className="shrink-0 animate-spin text-brand-teal" />}
+            <span className="text-xs font-semibold leading-relaxed font-mono">{t.message}</span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

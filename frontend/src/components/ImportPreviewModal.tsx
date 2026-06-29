@@ -15,6 +15,7 @@ interface ImportPreviewModalProps {
     relationships: any[];
   };
   files?: FileList | File[] | null;
+  showToast?: (message: string, type: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
 export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
@@ -22,7 +23,8 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   onClose,
   onImportComplete,
   initialData,
-  files
+  files,
+  showToast
 }) => {
   const [assets, setAssets] = useState<any[]>([]);
   const [relationships, setRelationships] = useState<any[]>([]);
@@ -299,6 +301,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   const handleSaveDraft = async () => {
     if (!draftName.trim()) return;
     setLoading(true);
+    if (showToast) showToast('Saving draft...', 'info');
     try {
       await api.saveDraft({
         name: draftName.trim(),
@@ -312,10 +315,15 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
       setDraftName('');
       setIsDirty(false);
       fetchDrafts();
-      alert('Draft saved successfully!');
+      if (showToast) {
+        showToast('Import draft saved successfully!', 'success');
+      } else {
+        alert('Draft saved successfully!');
+      }
       onClose(true); // Close the modal
     } catch (err: any) {
       setError(err.message || 'Failed to save draft');
+      if (showToast) showToast('Failed to save draft.', 'error');
     } finally {
       setLoading(false);
     }
@@ -329,17 +337,24 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
     setShowDraftsList(false);
     setIsDirty(false); // Clean after loading saved draft
     setError(null);
+    if (showToast) showToast('Loaded import draft.', 'success');
   };
 
   // Delete Draft
   const handleDeleteDraft = async (draftId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (!confirm('Are you sure you want to delete this draft?')) return;
+    if (showToast) showToast('Deleting draft...', 'info');
     try {
       await api.deleteDraft(draftId);
       fetchDrafts();
+      if (showToast) showToast('Draft successfully deleted.', 'success');
     } catch (err: any) {
-      alert('Failed to delete draft: ' + err.message);
+      if (showToast) {
+        showToast('Failed to delete draft: ' + err.message, 'error');
+      } else {
+        alert('Failed to delete draft: ' + err.message);
+      }
     }
   };
 
@@ -347,6 +362,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   const handleFinalize = async () => {
     setLoading(true);
     setError(null);
+    if (showToast) showToast('Saving workspace to database...', 'info');
     try {
       // Filter out disabled assets, columns
       const activeAssets = assets
@@ -373,6 +389,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
       onImportComplete();
     } catch (err: any) {
       setError(err.message || 'Failed to finalize import');
+      if (showToast) showToast('Failed to finalize import.', 'error');
     } finally {
       setLoading(false);
     }

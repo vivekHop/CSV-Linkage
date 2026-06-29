@@ -2,10 +2,12 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
+import uuid
+import re
 from app.database import get_db
 from app.schemas import AssetResponse, AssetUpdate, VersionHistoryResponse, AssetCreate, WorkspaceSync, ImportDraftCreate, ImportDraftResponse
-from app.models import Asset, ColumnModel, RelationshipModel
-from app.repositories import AssetRepository, ColumnRepository, RelationshipRepository, ImportDraftRepository
+from app.models import Asset, ColumnModel, RelationshipModel, VersionHistory, ActivityLog
+from app.repositories import AssetRepository, ColumnRepository, RelationshipRepository, ImportDraftRepository, create_asset_snapshot
 from app.profiler import profile_file
 
 from app.websockets import manager
@@ -235,15 +237,17 @@ async def profile_preview(files: List[UploadFile] = File(...), db: Session = Dep
                             
                             if ref_sheet == sheet_name:
                                 if 1 <= c_idx <= len(headers):
-                                    return f"[{headers[c_idx - 1]}]"
+                                    return f"[{sheet_name}][{headers[c_idx - 1]}]"
                             else:
                                 other_headers = all_sheets_headers.get(ref_sheet)
                                 if other_headers and 1 <= c_idx <= len(other_headers):
-                                    return f"[{ref_sheet}.{other_headers[c_idx - 1]}]"
+                                    return f"[{ref_sheet}][{other_headers[c_idx - 1]}]"
                             return match.group(0)
                             
                         pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?([A-Za-z]+)([0-9]+)"
                         readable_formula = re.sub(pattern, replace_ref, formula_str)
+                        if readable_formula.startswith("="):
+                            readable_formula = readable_formula[1:]
                         
                         col["custom_attributes"]["formula"] = readable_formula
                         
@@ -351,21 +355,24 @@ async def profile_preview(files: List[UploadFile] = File(...), db: Session = Dep
 
 @router.post("/finalize-import")
 async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)):
-    asset_repo = AssetRepository(db)
-    column_repo = ColumnRepository(db)
-    relationship_repo = RelationshipRepository(db)
-    
     # We will map temp_id -> actual_db_uuid
     id_map = {}
     created_assets = []
     
     try:
-        # 1. Create Assets and Columns
+        # 1. Create Assets and Columns in memory and add to session
         for asset_data in payload.get("assets", []):
             temp_asset_id = asset_data.get("temp_id")
             
-            # Create asset in db
-            asset = asset_repo.create(
+            asset_uuid = str(uuid.uuid4())
+            id_map[temp_asset_id] = asset_uuid
+            
+            tags = asset_data.get("tags")
+            if tags is None:
+                tags = ["uploaded"]
+                
+            db_asset = Asset(
+                id=asset_uuid,
                 name=asset_data["name"],
                 asset_type=asset_data.get("asset_type", "excel"),
                 row_count=asset_data.get("row_count"),
@@ -374,48 +381,74 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
                 description=asset_data.get("description", ""),
                 owner=asset_data.get("owner", "Workspace User"),
                 notes=asset_data.get("notes", ""),
-                tags=asset_data.get("tags", []),
-                custom_attributes=asset_data.get("custom_attributes", {})
+                tags=tags,
+                custom_attributes=asset_data.get("custom_attributes", {}),
+                version=1
             )
             
-            id_map[temp_asset_id] = asset.id
-            
-            # Create columns in db
+            # Create columns in memory and associate them with the asset
+            db_cols = []
             for col_data in asset_data.get("columns", []):
                 temp_col_id = col_data.get("temp_id")
+                col_uuid = str(uuid.uuid4())
+                id_map[temp_col_id] = col_uuid
                 
-                col = column_repo.create(asset.id, {
-                    "name": col_data["name"],
-                    "datatype": col_data["datatype"],
-                    "nullable_percentage": col_data.get("nullable_percentage"),
-                    "distinct_count": col_data.get("distinct_count"),
-                    "duplicate_count": col_data.get("duplicate_count"),
-                    "min": col_data.get("min"),
-                    "max": col_data.get("max"),
-                    "mean": col_data.get("mean"),
-                    "median": col_data.get("median"),
-                    "sample_values": col_data.get("sample_values", []),
-                    "description": col_data.get("description", ""),
-                    "notes": col_data.get("notes", ""),
-                    "tags": col_data.get("tags", []),
-                    "custom_attributes": col_data.get("custom_attributes", {})
-                })
+                db_col = ColumnModel(
+                    id=col_uuid,
+                    asset_id=asset_uuid,
+                    name=col_data["name"],
+                    datatype=col_data["datatype"],
+                    nullable_percentage=col_data.get("nullable_percentage"),
+                    distinct_count=col_data.get("distinct_count"),
+                    duplicate_count=col_data.get("duplicate_count"),
+                    min=col_data.get("min"),
+                    max=col_data.get("max"),
+                    mean=col_data.get("mean"),
+                    median=col_data.get("median"),
+                    sample_values=col_data.get("sample_values", []),
+                    description=col_data.get("description", ""),
+                    notes=col_data.get("notes", ""),
+                    tags=col_data.get("tags", []),
+                    custom_attributes=col_data.get("custom_attributes", {})
+                )
+                db_cols.append(db_col)
+                db.add(db_col)
                 
-                id_map[temp_col_id] = col.id
-                
-            db_asset = asset_repo.get_by_id(asset.id)
+            db_asset.columns = db_cols
+            db.add(db_asset)
+            
+            # Create initial version snapshot
+            snapshot = create_asset_snapshot(db_asset)
+            db_version = VersionHistory(
+                id=str(uuid.uuid4()),
+                asset_id=asset_uuid,
+                version_number=1,
+                change_summary="Initial Upload",
+                metadata_snapshot=snapshot
+            )
+            db.add(db_version)
+            
+            # Log Activity
+            activity = ActivityLog(
+                id=str(uuid.uuid4()),
+                activity_type="asset_created",
+                details=f"Uploaded CSV asset '{db_asset.name}' with {len(db_cols)} columns.",
+                asset_id=asset_uuid
+            )
+            db.add(activity)
+            
             created_assets.append(db_asset)
             
-        # 2. Create Finalized Relationships
+        # 2. Create Finalized Relationships in memory and add to session
         for rel_data in payload.get("relationships", []):
-            # Resolve source and target IDs
             raw_source_id = rel_data["source_node_id"]
             raw_dest_id = rel_data["destination_node_id"]
             
             source_id = id_map.get(raw_source_id, raw_source_id)
             dest_id = id_map.get(raw_dest_id, raw_dest_id)
             
-            relationship_repo.create(
+            db_rel = RelationshipModel(
+                id=str(uuid.uuid4()),
                 source_node_type=rel_data["source_node_type"],
                 source_node_id=source_id,
                 destination_node_type=rel_data["destination_node_type"],
@@ -423,7 +456,11 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
                 relationship_type=rel_data["relationship_type"],
                 metadata_json=rel_data.get("metadata_json", {})
             )
+            db.add(db_rel)
             
+        # Commit all inserts in a single transaction
+        db.commit()
+        
         # Broadcast all asset creations
         for asset in created_assets:
             await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id}})
