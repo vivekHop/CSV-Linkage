@@ -11,7 +11,7 @@ import ReactFlow, {
 import type { Connection, Edge, Node } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { api, WS_URL, setActiveWorkspaceId } from './api';
-import type { Asset, Column, Relationship, ActivityLog } from './types';
+import type { Asset, Column, Relationship, ActivityLog, Workspace } from './types';
 import { CSVNode } from './components/CSVNode';
 import { LeftSidebar } from './components/LeftSidebar';
 import { ImportPreviewModal } from './components/ImportPreviewModal';
@@ -244,19 +244,41 @@ const removeTableReferencesFromFormula = (formula: string, tableName: string): s
 };
 
 export default function App() {
-  const [workspaces, setWorkspaces] = useState<string[]>(() => {
-    const saved = localStorage.getItem('workspaces');
-    return saved ? JSON.parse(saved) : ['Workspace 1', 'Workspace 2', 'Workspace 3'];
-  });
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<string>(() => {
     const saved = localStorage.getItem('activeWorkspaceId');
-    return saved || 'Workspace 1';
+    return saved || '';
   });
 
   const activeWorkspaceRef = useRef(activeWorkspace);
   useEffect(() => {
     activeWorkspaceRef.current = activeWorkspace;
   }, [activeWorkspace]);
+
+  // Load workspaces from backend on mount
+  useEffect(() => {
+    const fetchWorkspaces = async () => {
+      try {
+        const list = await api.getWorkspaces();
+        setWorkspaces(list);
+        
+        let currentId = localStorage.getItem('activeWorkspaceId');
+        const exists = list.some((w) => w.id === currentId);
+        if (!exists && list.length > 0) {
+          currentId = list[0].id;
+        }
+        
+        if (currentId) {
+          setActiveWorkspace(currentId);
+          setActiveWorkspaceId(currentId);
+        }
+      } catch (err) {
+        console.error('Failed to load workspaces:', err);
+        showToast('Failed to load workspaces from server', 'error');
+      }
+    };
+    fetchWorkspaces();
+  }, []);
 
   const [assets, setAssets] = useState<Asset[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
@@ -293,47 +315,50 @@ export default function App() {
     loadWorkspaceData();
   };
 
-  const handleAddWorkspace = (name: string) => {
-    if (workspaces.includes(name)) {
+  const handleAddWorkspace = async (name: string) => {
+    if (workspaces.some((w) => w.name.toLowerCase() === name.toLowerCase())) {
       showToast("Workspace name already exists!", "warning");
       return;
     }
-    const nextWorkspaces = [...workspaces, name];
-    setWorkspaces(nextWorkspaces);
-    localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
-    handleSelectWorkspace(name);
-    showToast(`Workspace "${name}" created!`, "success");
+    try {
+      const newWs = await api.createWorkspace(name);
+      setWorkspaces((prev) => [...prev, newWs]);
+      handleSelectWorkspace(newWs.id);
+      showToast(`Workspace "${name}" created!`, "success");
+    } catch (err: any) {
+      showToast(`Failed to create workspace: ${err.message}`, "error");
+    }
   };
 
-  const handleRenameWorkspace = async (oldName: string, newName: string) => {
+  const handleRenameWorkspace = async (id: string, newName: string) => {
     try {
-      await api.renameWorkspace(oldName, newName);
-      
-      const nextWorkspaces = workspaces.map((w) => (w === oldName ? newName : w));
-      setWorkspaces(nextWorkspaces);
-      localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
-      
-      if (activeWorkspace === oldName) {
-        handleSelectWorkspace(newName);
-      }
-      showToast(`Workspace "${oldName}" renamed to "${newName}".`, "success");
+      const updatedWs = await api.renameWorkspace(id, newName);
+      setWorkspaces((prev) => prev.map((w) => (w.id === id ? updatedWs : w)));
+      showToast(`Workspace renamed to "${newName}".`, "success");
     } catch (err: any) {
       showToast(`Failed to rename workspace: ${err.message}`, "error");
     }
   };
 
-  const handleDeleteWorkspace = async (workspaceId: string) => {
+  const handleDeleteWorkspace = async (id: string) => {
     try {
-      await api.deleteWorkspace(workspaceId);
+      const targetWs = workspaces.find((w) => w.id === id);
+      const targetName = targetWs ? targetWs.name : 'Workspace';
+      await api.deleteWorkspace(id);
       
-      const nextWorkspaces = workspaces.filter((w) => w !== workspaceId);
+      const nextWorkspaces = workspaces.filter((w) => w.id !== id);
       setWorkspaces(nextWorkspaces);
-      localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
       
-      if (activeWorkspace === workspaceId) {
-        handleSelectWorkspace(nextWorkspaces[0] || 'Workspace 1');
+      if (activeWorkspace === id) {
+        const fallbackWs = nextWorkspaces[0];
+        if (fallbackWs) {
+          handleSelectWorkspace(fallbackWs.id);
+        } else {
+          setActiveWorkspace('');
+          setActiveWorkspaceId('');
+        }
       }
-      showToast(`Workspace "${workspaceId}" deleted.`, "success");
+      showToast(`Workspace "${targetName}" deleted.`, "success");
     } catch (err: any) {
       showToast(`Failed to delete workspace: ${err.message}`, "error");
     }
@@ -509,8 +534,10 @@ export default function App() {
   };
 
   useEffect(() => {
-    loadWorkspaceData();
-  }, []);
+    if (activeWorkspace) {
+      loadWorkspaceData();
+    }
+  }, [activeWorkspace]);
 
   // Initialize WebSockets for real-time collaboration with auto-reconnection
   useEffect(() => {
@@ -547,16 +574,21 @@ export default function App() {
             return;
           }
 
-          if (event_type === 'workspace_renamed') {
-            const { old_name, new_name } = data;
+          if (event_type === 'workspace_created') {
+            const { id, name } = data;
             setWorkspaces((prev) => {
-              const next = prev.map((w) => (w === old_name ? new_name : w));
-              localStorage.setItem('workspaces', JSON.stringify(next));
-              return next;
+              if (prev.some((w) => w.id === id)) return prev;
+              return [...prev, { id, name, created_at: '', updated_at: '' }];
             });
-            if (activeWorkspaceRef.current === old_name) {
-              handleSelectWorkspace(new_name);
-            }
+            showToast(`Workspace "${name}" was created by another user.`, "info");
+            return;
+          }
+
+          if (event_type === 'workspace_renamed') {
+            const { id, old_name, new_name } = data;
+            setWorkspaces((prev) => {
+              return prev.map((w) => (w.id === id ? { ...w, name: new_name } : w));
+            });
             showToast(`Workspace "${old_name}" was renamed to "${new_name}" by another user.`, "info");
             return;
           }
@@ -564,14 +596,18 @@ export default function App() {
           if (event_type === 'workspace_deleted') {
             const { workspace_id } = data;
             setWorkspaces((prev) => {
-              const next = prev.filter((w) => w !== workspace_id);
-              localStorage.setItem('workspaces', JSON.stringify(next));
-              return next;
+              return prev.filter((w) => w.id !== workspace_id);
             });
             if (activeWorkspaceRef.current === workspace_id) {
-              handleSelectWorkspace('Workspace 1');
+              setWorkspaces((currWorkspaces) => {
+                const remaining = currWorkspaces.filter((w) => w.id !== workspace_id);
+                if (remaining.length > 0) {
+                  handleSelectWorkspace(remaining[0].id);
+                }
+                return remaining;
+              });
             }
-            showToast(`Workspace "${workspace_id}" was deleted by another user.`, "info");
+            showToast(`Active workspace was deleted by another user.`, "info");
             return;
           }
 

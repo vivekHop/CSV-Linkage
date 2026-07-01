@@ -63,10 +63,14 @@ class ConnectionManager:
         """
         # Extract workspace_id to filter who receives the message
         workspace_id = None
-        if isinstance(message.get("data"), dict):
-            workspace_id = message["data"].get("workspace_id")
-        if not workspace_id:
-            workspace_id = message.get("workspace_id")
+        event_type = message.get("event_type")
+        
+        # Workspace lifecycle events should be broadcast to all connections globally
+        if event_type not in ["workspace_created", "workspace_renamed", "workspace_deleted"]:
+            if isinstance(message.get("data"), dict):
+                workspace_id = message["data"].get("workspace_id")
+            if not workspace_id:
+                workspace_id = message.get("workspace_id")
 
         message_str = json.dumps(message)
         disconnected = []

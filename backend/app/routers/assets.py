@@ -14,6 +14,33 @@ from app.websockets import manager
 
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
+from app.models import Workspace
+
+def resolve_workspace_id(workspace_id: str, db: Session) -> str:
+    # 1. Try to find by UUID
+    ws = db.query(Workspace).filter(Workspace.id == workspace_id).first()
+    if ws:
+        return ws.id
+    # 2. Try to find by name (e.g. legacy name "Workspace 1")
+    ws = db.query(Workspace).filter(Workspace.name == workspace_id).first()
+    if ws:
+        return ws.id
+    # 3. Fallback to the first workspace in the DB
+    ws = db.query(Workspace).order_by(Workspace.created_at.asc()).first()
+    if ws:
+        return ws.id
+    # 4. If DB is empty, create a default workspace
+    ws = Workspace(
+        id=str(uuid.uuid4()),
+        name="Workspace 1",
+        created_at=datetime.utcnow(),
+        updated_at=datetime.utcnow()
+    )
+    db.add(ws)
+    db.commit()
+    db.refresh(ws)
+    return ws.id
+
 @router.post("/upload", response_model=List[AssetResponse], status_code=status.HTTP_201_CREATED)
 async def upload_spreadsheet_files(
     files: List[UploadFile] = File(...),
@@ -25,6 +52,7 @@ async def upload_spreadsheet_files(
     If a file contains multiple sheets (like Excel), profiles and creates a separate table for each sheet.
     The raw data is processed in-memory and discarded; only the metadata is stored.
     """
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     asset_repo = AssetRepository(db)
     column_repo = ColumnRepository(db)
     created_assets = []
@@ -91,6 +119,7 @@ async def create_asset(
     Creates a new asset and its columns directly from a metadata payload.
     Used for canvas duplicating, copy-pasting, and grouping.
     """
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     asset_repo = AssetRepository(db)
     column_repo = ColumnRepository(db)
     
@@ -138,6 +167,7 @@ def list_assets(
     """
     Retrieves all metadata assets (CSV files).
     """
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     return AssetRepository(db).get_all(x_workspace_id)
 
 
@@ -160,6 +190,7 @@ async def profile_preview(
     import io
     from openpyxl import load_workbook
     
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     # 1. Fetch all existing columns in the database for fuzzy matching
     existing_cols = db.query(ColumnModel).join(Asset).filter(Asset.workspace_id == x_workspace_id).all()
     
@@ -388,6 +419,7 @@ async def finalize_import(
     db: Session = Depends(get_db)
 ):
     # We will map temp_id -> actual_db_uuid
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     id_map = {}
     created_assets = []
     
@@ -518,6 +550,7 @@ def list_drafts(
     x_workspace_id: str = Header("Workspace 1"),
     db: Session = Depends(get_db)
 ):
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     return ImportDraftRepository(db).get_all(x_workspace_id)
 
 
@@ -527,6 +560,7 @@ def save_draft(
     x_workspace_id: str = Header("Workspace 1"),
     db: Session = Depends(get_db)
 ):
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     return ImportDraftRepository(db).create(workspace_id=x_workspace_id, name=payload.name, draft_json=payload.draft_json)
 
 
@@ -539,6 +573,161 @@ def delete_draft(draft_id: str, db: Session = Depends(get_db)):
             detail="Draft not found"
         )
     return {"status": "success", "message": "Draft successfully deleted."}
+
+from app.models import Workspace
+from app.schemas import WorkspaceCreate, WorkspaceResponse
+
+@router.get("/workspaces", response_model=List[WorkspaceResponse])
+async def get_workspaces(db: Session = Depends(get_db)):
+    """
+    Returns all workspaces in the database.
+    """
+    try:
+        workspaces = db.query(Workspace).order_by(Workspace.created_at.asc()).all()
+        return workspaces
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch workspaces: {str(e)}"
+        )
+
+@router.post("/workspaces", response_model=WorkspaceResponse, status_code=status.HTTP_201_CREATED)
+async def create_workspace(payload: WorkspaceCreate, db: Session = Depends(get_db)):
+    """
+    Creates a new workspace in the database.
+    """
+    try:
+        # Check if workspace with same name already exists
+        existing = db.query(Workspace).filter(Workspace.name == payload.name).first()
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace with name '{payload.name}' already exists."
+            )
+        
+        ws = Workspace(
+            id=str(uuid.uuid4()),
+            name=payload.name,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow()
+        )
+        db.add(ws)
+        db.commit()
+        db.refresh(ws)
+        
+        # Broadcast that a workspace was created so other clients can sync
+        await manager.broadcast({
+            "event_type": "workspace_created",
+            "data": {
+                "id": ws.id,
+                "name": ws.name
+            }
+        })
+        
+        return ws
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create workspace: {str(e)}"
+        )
+
+@router.put("/workspaces/{id}", response_model=WorkspaceResponse)
+async def rename_workspace(id: str, payload: WorkspaceCreate, db: Session = Depends(get_db)):
+    """
+    Renames a workspace in the database. Updates only the workspace's name.
+    """
+    try:
+        ws = db.query(Workspace).filter(Workspace.id == id).first()
+        if not ws:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace with ID '{id}' not found."
+            )
+            
+        old_name = ws.name
+        new_name = payload.name
+        
+        # Check if new name already exists
+        existing = db.query(Workspace).filter(Workspace.name == new_name).first()
+        if existing and existing.id != id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Workspace with name '{new_name}' already exists."
+            )
+            
+        ws.name = new_name
+        ws.updated_at = datetime.utcnow()
+        db.commit()
+        db.refresh(ws)
+        
+        # Broadcast rename event to clients to dynamically update their UI / connection
+        await manager.broadcast({
+            "event_type": "workspace_renamed",
+            "data": {
+                "id": ws.id,
+                "old_name": old_name,
+                "new_name": new_name
+            }
+        })
+        
+        return ws
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rename workspace: {str(e)}"
+        )
+
+@router.delete("/workspaces/{id}")
+async def delete_workspace(id: str, db: Session = Depends(get_db)):
+    """
+    Deletes a workspace. Deletes the workspace record, and cleans all Assets, Relationships, ActivityLogs, and ImportDrafts associated with this workspace's ID.
+    """
+    try:
+        ws = db.query(Workspace).filter(Workspace.id == id).first()
+        if not ws:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workspace with ID '{id}' not found."
+            )
+            
+        # Delete relationships
+        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == id).delete(synchronize_session=False)
+        
+        # Delete assets (which will cascade columns)
+        assets_to_delete = db.query(Asset).filter(Asset.workspace_id == id).all()
+        for asset in assets_to_delete:
+            db.delete(asset)
+            
+        db.query(ActivityLog).filter(ActivityLog.workspace_id == id).delete(synchronize_session=False)
+        db.query(ImportDraft).filter(ImportDraft.workspace_id == id).delete(synchronize_session=False)
+        
+        # Delete workspace itself
+        db.delete(ws)
+        db.commit()
+        
+        # Broadcast delete event to clients
+        await manager.broadcast({
+            "event_type": "workspace_deleted",
+            "data": {
+                "workspace_id": id
+            }
+        })
+        
+        return {"status": "success", "message": f"Workspace '{ws.name}' (ID: {id}) deleted."}
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete workspace: {str(e)}"
+        )
 
 
 @router.get("/{asset_id}", response_model=AssetResponse)
@@ -707,79 +896,4 @@ async def sync_workspace(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Workspace sync failed: {str(e)}"
-        )
-
-from pydantic import BaseModel
-
-class WorkspaceRenamePayload(BaseModel):
-    old_name: str
-    new_name: str
-
-class WorkspaceDeletePayload(BaseModel):
-    workspace_id: str
-
-@router.post("/workspace/rename")
-async def rename_workspace(payload: WorkspaceRenamePayload, db: Session = Depends(get_db)):
-    """
-    Renames a workspace. Updates workspace_id in all models (Asset, RelationshipModel, ActivityLog, ImportDraft).
-    """
-    try:
-        # Perform updates
-        db.query(Asset).filter(Asset.workspace_id == payload.old_name).update({Asset.workspace_id: payload.new_name}, synchronize_session=False)
-        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == payload.old_name).update({RelationshipModel.workspace_id: payload.new_name}, synchronize_session=False)
-        db.query(ActivityLog).filter(ActivityLog.workspace_id == payload.old_name).update({ActivityLog.workspace_id: payload.new_name}, synchronize_session=False)
-        db.query(ImportDraft).filter(ImportDraft.workspace_id == payload.old_name).update({ImportDraft.workspace_id: payload.new_name}, synchronize_session=False)
-        
-        db.commit()
-        
-        # Broadcast rename event to clients to dynamically update their UI / connection
-        await manager.broadcast({
-            "event_type": "workspace_renamed",
-            "data": {
-                "old_name": payload.old_name,
-                "new_name": payload.new_name
-            }
-        })
-        
-        return {"status": "success", "message": f"Workspace '{payload.old_name}' renamed to '{payload.new_name}'."}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to rename workspace: {str(e)}"
-        )
-
-@router.post("/workspace/delete")
-async def delete_workspace(payload: WorkspaceDeletePayload, db: Session = Depends(get_db)):
-    """
-    Deletes a workspace. Deletes all Assets (and cascades columns), Relationships, ActivityLogs, and ImportDrafts.
-    """
-    try:
-        # Let's delete relationships first to avoid FK constraints
-        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == payload.workspace_id).delete(synchronize_session=False)
-        
-        # Delete assets (which will cascade columns)
-        assets_to_delete = db.query(Asset).filter(Asset.workspace_id == payload.workspace_id).all()
-        for asset in assets_to_delete:
-            db.delete(asset)
-            
-        db.query(ActivityLog).filter(ActivityLog.workspace_id == payload.workspace_id).delete(synchronize_session=False)
-        db.query(ImportDraft).filter(ImportDraft.workspace_id == payload.workspace_id).delete(synchronize_session=False)
-        
-        db.commit()
-        
-        # Broadcast delete event to clients
-        await manager.broadcast({
-            "event_type": "workspace_deleted",
-            "data": {
-                "workspace_id": payload.workspace_id
-            }
-        })
-        
-        return {"status": "success", "message": f"Workspace '{payload.workspace_id}' deleted."}
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to delete workspace: {str(e)}"
         )

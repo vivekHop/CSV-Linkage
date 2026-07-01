@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, Search, FileSpreadsheet, Loader2, Focus, Trash2, Tag, BookOpen, User, FileText, ChevronDown, Plus, LayoutGrid, Check } from 'lucide-react';
 import { api } from '../api';
-import type { Asset, SearchResultItem } from '../types';
+import type { Asset, SearchResultItem, Workspace } from '../types';
 import { CommentsPanel } from './Comments';
 import type { CanvasComment } from './Comments';
 
@@ -15,12 +15,12 @@ interface LeftSidebarProps {
   onShowImportPreview?: (previewData: { assets: any[]; relationships: any[] }) => void;
   
   // Workspace props
-  activeWorkspace: string;
-  workspaces: string[];
+  activeWorkspace: string; // Active workspace ID (UUID)
+  workspaces: Workspace[];
   onSelectWorkspace: (workspaceId: string) => void;
   onAddWorkspace: (name: string) => void;
-  onRenameWorkspace: (oldName: string, newName: string) => void;
-  onDeleteWorkspace: (workspaceId: string) => void;
+  onRenameWorkspace: (id: string, newName: string) => void;
+  onDeleteWorkspace: (id: string) => void;
   
   // Comments props
   comments: CanvasComment[];
@@ -60,6 +60,12 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const [commentsExpanded, setCommentsExpanded] = useState(true);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   
+  // Custom dialog modal states
+  const [modalType, setModalType] = useState<'create' | 'rename' | 'delete' | null>(null);
+  const [modalTargetId, setModalTargetId] = useState<string | null>(null);
+  const [modalInput, setModalInput] = useState('');
+  const [modalError, setModalError] = useState<string | null>(null);
+  
   const fileInputRef = useRef<HTMLInputElement>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
@@ -75,24 +81,24 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   }, []);
 
   const handleAddNewWorkspace = () => {
-    const name = prompt("Enter new workspace name:");
-    if (name && name.trim()) {
-      onAddWorkspace(name.trim());
-      setDropdownOpen(false);
-    }
+    setModalType('create');
+    setModalInput('');
+    setModalError(null);
+    setDropdownOpen(false);
   };
 
-  const handleRenameWorkspace = (ws: string) => {
-    const newName = prompt(`Rename workspace "${ws}" to:`, ws);
-    if (newName && newName.trim() && newName.trim() !== ws) {
-      onRenameWorkspace(ws, newName.trim());
-    }
+  const handleRenameWorkspace = (id: string, name: string) => {
+    setModalType('rename');
+    setModalTargetId(id);
+    setModalInput(name);
+    setModalError(null);
+    setDropdownOpen(false);
   };
 
-  const handleDeleteWorkspace = (ws: string) => {
-    if (confirm(`Are you sure you want to permanently delete workspace "${ws}"? This will delete all its tables, relationships, and history.`)) {
-      onDeleteWorkspace(ws);
-    }
+  const handleDeleteWorkspace = (id: string) => {
+    setModalType('delete');
+    setModalTargetId(id);
+    setDropdownOpen(false);
   };
 
   // Handle live search
@@ -163,6 +169,9 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
     handleFileUpload(e.dataTransfer.files);
   };
 
+  const activeWorkspaceObj = workspaces.find((w) => w.id === activeWorkspace);
+  const activeWorkspaceName = activeWorkspaceObj ? activeWorkspaceObj.name : 'Workspace 1';
+
   return (
     <aside className="w-full h-full bg-workspace-850 border-r border-workspace-750 flex flex-col z-10 select-none overflow-hidden font-sans">
       {/* Workspace Selector Dropdown Header */}
@@ -173,11 +182,11 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
         >
           <div className="flex items-center space-x-2.5 min-w-0">
             <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-brand-teal/80 to-brand-teal flex items-center justify-center text-workspace-950 font-bold text-sm shadow-glow-teal shrink-0 select-none">
-              {activeWorkspace.charAt(0).toUpperCase()}
+              {activeWorkspaceName.charAt(0).toUpperCase()}
             </div>
             <div className="min-w-0 flex-1">
               <span className="block text-xs font-semibold text-workspace-50 truncate leading-tight">
-                {activeWorkspace}
+                {activeWorkspaceName}
               </span>
               <span className="block text-[9px] text-workspace-500 font-medium tracking-wide uppercase">
                 Active Workspace
@@ -195,10 +204,10 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             
             <div className="max-h-48 overflow-y-auto space-y-0.5 pr-1">
               {workspaces.map((ws) => {
-                const isSelected = ws === activeWorkspace;
+                const isSelected = ws.id === activeWorkspace;
                 return (
                   <div
-                    key={ws}
+                    key={ws.id}
                     className={`group/item flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
                       isSelected
                         ? 'bg-brand-teal/10 text-brand-teal border border-brand-teal/20'
@@ -207,13 +216,13 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                   >
                     <button
                       onClick={() => {
-                        onSelectWorkspace(ws);
+                        onSelectWorkspace(ws.id);
                         setDropdownOpen(false);
                       }}
                       className="flex-1 min-w-0 flex items-center space-x-2 truncate text-left cursor-pointer"
                     >
                       <LayoutGrid size={12} className={isSelected ? 'text-brand-teal' : 'text-workspace-500'} />
-                      <span className="truncate">{ws}</span>
+                      <span className="truncate">{ws.name}</span>
                     </button>
                     
                     <div className="flex items-center space-x-1 shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity">
@@ -221,7 +230,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                       <button
                         onClick={(e) => {
                           e.stopPropagation();
-                          handleRenameWorkspace(ws);
+                          handleRenameWorkspace(ws.id, ws.name);
                         }}
                         title="Rename Workspace"
                         className="p-1 hover:bg-workspace-700 rounded text-workspace-400 hover:text-brand-teal transition-colors cursor-pointer"
@@ -236,7 +245,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            handleDeleteWorkspace(ws);
+                            handleDeleteWorkspace(ws.id);
                           }}
                           title="Delete Workspace"
                           className="p-1 hover:bg-workspace-700 rounded text-workspace-400 hover:text-red-400 transition-colors cursor-pointer"
@@ -444,6 +453,98 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
           onToggleExpanded={() => setCommentsExpanded(!commentsExpanded)}
         />
       </div>
+
+      {/* Stylish Custom Dialog Modals */}
+      {modalType && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-sm z-[999] flex items-center justify-center p-4 animate-fadeIn">
+          <div className="bg-workspace-900 border border-workspace-750 rounded-2xl w-full max-w-sm p-6 shadow-2xl flex flex-col space-y-4">
+            <h3 className="text-sm font-bold text-workspace-50">
+              {modalType === 'create' && 'Create New Workspace'}
+              {modalType === 'rename' && 'Rename Workspace'}
+              {modalType === 'delete' && 'Delete Workspace'}
+            </h3>
+            
+            {modalType !== 'delete' ? (
+              <div className="flex flex-col space-y-2">
+                <input
+                  type="text"
+                  value={modalInput}
+                  onChange={(e) => {
+                    setModalInput(e.target.value);
+                    setModalError(null);
+                  }}
+                  placeholder="Enter workspace name"
+                  className="bg-workspace-800 border border-workspace-750 rounded-xl px-3 py-2 text-xs text-workspace-50 placeholder-workspace-500 focus:outline-none focus:border-brand-teal/50 transition-all"
+                  autoFocus
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      document.getElementById('modal-submit-btn')?.click();
+                    }
+                  }}
+                />
+                {modalError && <span className="text-[10px] text-brand-coral">{modalError}</span>}
+              </div>
+            ) : (
+              <p className="text-xs text-workspace-300 leading-relaxed">
+                Are you sure you want to permanently delete this workspace? This will delete all its tables, relationships, and history. This action cannot be undone.
+              </p>
+            )}
+            
+            <div className="flex items-center justify-end space-x-2 pt-2">
+              <button
+                onClick={() => {
+                  setModalType(null);
+                  setModalInput('');
+                  setModalError(null);
+                }}
+                className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-workspace-300 hover:bg-workspace-800 transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                id="modal-submit-btn"
+                onClick={() => {
+                  if (modalType === 'create') {
+                    if (!modalInput.trim()) {
+                      setModalError('Workspace name cannot be empty');
+                      return;
+                    }
+                    if (workspaces.some(w => w.name.toLowerCase() === modalInput.trim().toLowerCase())) {
+                      setModalError('Workspace name already exists');
+                      return;
+                    }
+                    onAddWorkspace(modalInput.trim());
+                  } else if (modalType === 'rename' && modalTargetId) {
+                    if (!modalInput.trim()) {
+                      setModalError('Workspace name cannot be empty');
+                      return;
+                    }
+                    if (workspaces.some(w => w.id !== modalTargetId && w.name.toLowerCase() === modalInput.trim().toLowerCase())) {
+                      setModalError('Workspace name already exists');
+                      return;
+                    }
+                    onRenameWorkspace(modalTargetId, modalInput.trim());
+                  } else if (modalType === 'delete' && modalTargetId) {
+                    onDeleteWorkspace(modalTargetId);
+                  }
+                  setModalType(null);
+                  setModalInput('');
+                  setModalError(null);
+                }}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                  modalType === 'delete'
+                    ? 'bg-brand-coral hover:bg-brand-coral/95 text-white'
+                    : 'bg-brand-teal hover:bg-brand-teal/95 text-workspace-950 font-bold'
+                }`}
+              >
+                {modalType === 'create' && 'Create'}
+                {modalType === 'rename' && 'Rename'}
+                {modalType === 'delete' && 'Delete'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </aside>
   );
 };

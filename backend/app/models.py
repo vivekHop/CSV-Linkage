@@ -7,11 +7,19 @@ from app.database import Base
 def generate_uuid():
     return str(uuid.uuid4())
 
+class Workspace(Base):
+    __tablename__ = "workspaces"
+
+    id = Column(String(36), primary_key=True, default=generate_uuid)
+    name = Column(String(255), nullable=False, unique=True)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
 class Asset(Base):
     __tablename__ = "assets"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     asset_type = Column(String(50), nullable=False, default="csv")
     description = Column(Text, nullable=True)
@@ -76,7 +84,7 @@ class RelationshipModel(Base):
     __tablename__ = "relationships"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     
     # Source node info
     source_node_type = Column(String(50), nullable=False) # 'asset' or 'column'
@@ -119,7 +127,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     activity_type = Column(String(50), nullable=False) # e.g. 'asset_created', 'asset_updated', 'relationship_created', 'relationship_deleted'
     details = Column(Text, nullable=False)
     asset_id = Column(String(36), nullable=True)
@@ -132,7 +140,7 @@ class ImportDraft(Base):
     __tablename__ = "import_drafts"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
-    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
+    workspace_id = Column(String(36), ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=False)
     name = Column(String(255), nullable=False)
     draft_json = Column(JSON, nullable=False) # { "assets": [...], "relationships": [...] }
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

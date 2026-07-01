@@ -1,4 +1,4 @@
-import type { Asset, Column, Relationship, VersionHistory, ActivityLog, SearchResponse, ImportDraft } from './types';
+import type { Asset, Column, Relationship, VersionHistory, ActivityLog, SearchResponse, ImportDraft, Workspace } from './types';
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api/v1';
 
@@ -179,15 +179,22 @@ export const api = {
     }),
 
   // Workspace CRUD
-  renameWorkspace: (oldName: string, newName: string) =>
-    request<{ status: string; message: string }>('/assets/workspace/rename', {
+  getWorkspaces: () => request<Workspace[]>('/assets/workspaces'),
+
+  createWorkspace: (name: string) =>
+    request<Workspace>('/assets/workspaces', {
       method: 'POST',
-      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+      body: JSON.stringify({ name }),
     }),
 
-  deleteWorkspace: (workspaceId: string) =>
-    request<{ status: string; message: string }>('/assets/workspace/delete', {
-      method: 'POST',
-      body: JSON.stringify({ workspace_id: workspaceId }),
+  renameWorkspace: (id: string, name: string) =>
+    request<Workspace>(`/assets/workspaces/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name }),
+    }),
+
+  deleteWorkspace: (id: string) =>
+    request<{ status: string; message: string }>(`/assets/workspaces/${id}`, {
+      method: 'DELETE',
     }),
 };
