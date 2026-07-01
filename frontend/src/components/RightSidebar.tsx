@@ -319,6 +319,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   // Relationship state
   const [relDesc, setRelDesc] = useState('');
 
+  // Local buffered relationships for the active column to avoid instant saves/logs
+  const [localRels, setLocalRels] = useState<Relationship[]>([]);
+
   // Find incoming relationships for the selected column
   const incomingRels = selectedColumn
     ? relationships.filter(
@@ -371,17 +374,24 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
 
   useEffect(() => {
     if (selectedColumn) {
-      if (selectedColumn.id !== prevColumnId) {
+      const currentIncoming = relationships.filter(
+        (rel) =>
+          rel.destination_node_type === 'column' &&
+          rel.destination_node_id === selectedColumn.id
+      );
+      if (selectedColumn.id !== prevColumnId || currentIncoming.length !== localRels.length) {
         setColumnDesc(selectedColumn.description || '');
         setColumnNotes(selectedColumn.notes || '');
         setColumnTags(selectedColumn.tags || []);
         setColumnFormula(selectedColumn.custom_attributes?.formula || '');
         setPrevColumnId(selectedColumn.id);
+        setLocalRels(currentIncoming);
       }
     } else {
       setPrevColumnId(null);
+      setLocalRels([]);
     }
-  }, [selectedColumn, prevColumnId]);
+  }, [selectedColumn, prevColumnId, relationships, localRels.length]);
 
   useEffect(() => {
     if (selectedEdgeId && relationships.length > 0) {
@@ -454,12 +464,30 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   const handleSaveColumn = async () => {
     if (!selectedColumn) return;
 
-    // Check if anything actually changed before calling backend
-    const noChange =
-      columnDesc === (selectedColumn.description || '') &&
-      columnNotes === (selectedColumn.notes || '') &&
-      JSON.stringify(columnTags) === JSON.stringify(selectedColumn.tags || []) &&
-      columnFormula === (selectedColumn.custom_attributes?.formula || '');
+    // Determine what has changed
+    const currentIncoming = relationships.filter(
+      (rel) =>
+        rel.destination_node_type === 'column' &&
+        rel.destination_node_id === selectedColumn.id
+    );
+    const originalRelsMap = new Map(currentIncoming.map(r => [r.id, r]));
+
+    const relsToDelete = currentIncoming.filter(r => !localRels.some(lr => lr.id === r.id));
+    const relsToUpdate = localRels.filter(lr => {
+      const orig = originalRelsMap.get(lr.id);
+      if (!orig) return false;
+      const typeChanged = orig.relationship_type !== lr.relationship_type;
+      const metaChanged = JSON.stringify(orig.metadata_json) !== JSON.stringify(lr.metadata_json);
+      return typeChanged || metaChanged;
+    });
+
+    const columnChanged =
+      columnDesc !== (selectedColumn.description || '') ||
+      columnNotes !== (selectedColumn.notes || '') ||
+      JSON.stringify(columnTags) !== JSON.stringify(selectedColumn.tags || []) ||
+      columnFormula !== (selectedColumn.custom_attributes?.formula || '');
+
+    const noChange = !columnChanged && relsToDelete.length === 0 && relsToUpdate.length === 0;
 
     if (noChange) {
       if (showToast) showToast('No changes to save.', 'info');
@@ -470,6 +498,24 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
     setSaveStatus('saving');
 
     try {
+      // 1. Delete relationships that were removed locally
+      for (const r of relsToDelete) {
+        if (onDeleteRelationship) {
+          await onDeleteRelationship(r.id);
+        }
+      }
+
+      // 2. Update relationship types / metadata details
+      for (const lr of relsToUpdate) {
+        if (onUpdateRelationship) {
+          await onUpdateRelationship(lr.id, {
+            relationship_type: lr.relationship_type || null,
+            metadata_json: lr.metadata_json || {}
+          });
+        }
+      }
+
+      // 3. Update Column metadata and formula
       await onUpdateColumn(selectedColumn.id, {
         description: columnDesc,
         notes: columnNotes,
@@ -479,11 +525,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           formula: columnFormula,
         },
       });
+
       setSaveStatus('saved');
-      if (showToast) showToast('Column metadata saved!', 'success');
+      if (showToast) showToast('Column metadata and lineage saved!', 'success');
     } catch (err) {
       setSaveStatus('error');
-      if (showToast) showToast('Failed to save column metadata.', 'error');
+      if (showToast) showToast('Failed to save metadata.', 'error');
     } finally {
       setIsSaving(false);
       setTimeout(() => setSaveStatus('idle'), 2500);
@@ -1285,13 +1332,13 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                 </div>
 
                 {/* Lineage Relationship Mapping Type for Destination Column */}
-                {incomingRels.length > 0 && (
+                {localRels.length > 0 && (
                   <div className="space-y-3 pt-3 border-t border-workspace-750">
                     <label className="text-[10px] font-bold text-brand-teal uppercase tracking-wider block">
                       Incoming Lineage Mapping Type
                     </label>
                     <div className="space-y-2">
-                      {incomingRels.map((rel) => {
+                      {localRels.map((rel) => {
                         let sourceLabel = '';
                         if (rel.source_node_type === 'column') {
                           const srcCol = assets
@@ -1317,18 +1364,26 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                               value={rel.relationship_type || ''}
                               onChange={(e) => {
                                 const newType = e.target.value as any;
-                                if (onUpdateRelationship) {
-                                  const updates: Partial<Relationship> = {
-                                    relationship_type: newType || null,
-                                  };
-                                  if (newType === 'DERIVES_FROM') {
-                                    updates.metadata_json = {
-                                      ...(rel.metadata_json || {}),
-                                      formula: rel.metadata_json?.formula || columnFormula || ''
+                                setLocalRels(prev => prev.map(r => {
+                                  if (r.id === rel.id) {
+                                    const nextMeta = { ...(r.metadata_json || {}) };
+                                    if (newType !== 'DERIVES_FROM') {
+                                      delete nextMeta.formula;
+                                      const otherDerives = prev.some(other => other.id !== rel.id && other.relationship_type === 'DERIVES_FROM');
+                                      if (!otherDerives) {
+                                        setColumnFormula('');
+                                      }
+                                    } else {
+                                      nextMeta.formula = nextMeta.formula || columnFormula || '';
+                                    }
+                                    return {
+                                      ...r,
+                                      relationship_type: newType || null,
+                                      metadata_json: nextMeta
                                     };
                                   }
-                                  onUpdateRelationship(rel.id, updates);
-                                }
+                                  return r;
+                                }));
                               }}
                               className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-2 py-1 text-xs text-workspace-50 outline-none"
                             >
@@ -1343,7 +1398,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                       })}
                     </div>
 
-                    {incomingRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
+                    {localRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
                       <div className="mt-3 space-y-1.5 p-3 bg-workspace-900 border border-workspace-750 rounded-xl">
                         <label className="text-[10px] font-bold text-brand-teal uppercase tracking-wider block font-mono">
                           Derivation Formula / Expression

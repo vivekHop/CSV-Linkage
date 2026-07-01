@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header, status
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timedelta
 import uuid
 import re
 from app.database import get_db
@@ -463,7 +463,8 @@ async def finalize_import(
             
             # Create columns in memory and associate them with the asset
             db_cols = []
-            for col_data in asset_data.get("columns", []):
+            base_time = datetime.utcnow()
+            for idx, col_data in enumerate(asset_data.get("columns", [])):
                 temp_col_id = col_data.get("temp_id")
                 col_uuid = str(uuid.uuid4())
                 id_map[temp_col_id] = col_uuid
@@ -484,7 +485,8 @@ async def finalize_import(
                     description=col_data.get("description", ""),
                     notes=col_data.get("notes", ""),
                     tags=col_data.get("tags", []),
-                    custom_attributes=col_data.get("custom_attributes", {})
+                    custom_attributes=col_data.get("custom_attributes", {}),
+                    created_at=base_time + timedelta(milliseconds=idx)
                 )
                 db_cols.append(db_col)
                 db.add(db_col)

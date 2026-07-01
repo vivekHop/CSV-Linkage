@@ -542,6 +542,7 @@ class ColumnRepository(BaseRepository):
         # Build diff details for column
         if metadata_updates:
             detail_parts = []
+            diff_changes = []
             for field, old_val in old_values.items():
                 new_val = getattr(db_col, field, None)
                 if old_val != new_val:
@@ -549,20 +550,53 @@ class ColumnRepository(BaseRepository):
                         o = ", ".join(old_val) if isinstance(old_val, list) else str(old_val or "")
                         n = ", ".join(new_val) if isinstance(new_val, list) else str(new_val or "")
                         detail_parts.append(f"tags: [{o}] → [{n}]")
+                        diff_changes.append({
+                            "field": f"Column '{db_col.name}' tags",
+                            "old": f"[{o}]",
+                            "new": f"[{n}]"
+                        })
                     elif field == "custom_attributes":
                         # Only flag formula changes specifically
                         old_formula = (old_val or {}).get("formula", "")
                         new_formula = (new_val or {}).get("formula", "")
                         if old_formula != new_formula:
-                            detail_parts.append(f"formula: \"{old_formula or '(none)'}\" → \"{new_formula or '(none)'}\")")
+                            detail_parts.append(f"formula: \"{old_formula or '(none)'}\" → \"{new_formula or '(none)'}\"")
+                            diff_changes.append({
+                                "field": f"Column '{db_col.name}' formula",
+                                "old": old_formula or "(none)",
+                                "new": new_formula or "(none)"
+                            })
                     else:
                         o = str(old_val or "(empty)")
                         n = str(new_val or "(empty)")
                         detail_parts.append(f"{field}: \"{o}\" → \"{n}\"")
+                        diff_changes.append({
+                            "field": f"Column '{db_col.name}' {field}",
+                            "old": o,
+                            "new": n
+                        })
 
             if detail_parts:
                 activity_detail = f"Updated column '{db_col.asset.name}.{db_col.name}': " + "; ".join(detail_parts)
                 self.log_activity(db_col.asset.workspace_id, "column_updated", activity_detail, db_col.asset_id, commit=False)
+
+                parent_asset = db_col.asset
+                if parent_asset:
+                    parent_asset.version += 1
+                    parent_asset.updated_at = datetime.utcnow()
+                    self.db.flush()
+
+                    db_version = VersionHistory(
+                        asset_id=parent_asset.id,
+                        version_number=parent_asset.version,
+                        change_summary=f"Column update: {', '.join([c['field'] for c in diff_changes])}",
+                        metadata_snapshot={
+                            "version": parent_asset.version,
+                            "is_diff": True,
+                            "changes": diff_changes
+                        }
+                    )
+                    self.db.add(db_version)
 
         if commit:
             self.db.commit()
@@ -608,9 +642,27 @@ class ColumnRepository(BaseRepository):
         asset_repo = AssetRepository(self.db)
         asset = asset_repo.get_by_id(asset_id)
         if asset:
-            # Update column count
+            asset.version += 1
+            asset.updated_at = datetime.utcnow()
             new_col_count = max(0, (asset.column_count or len(asset.columns)) - 1)
-            asset_repo.update(asset_id, {"column_count": new_col_count}, commit=False)
+            asset.column_count = new_col_count
+            self.db.flush()
+
+            db_version = VersionHistory(
+                asset_id=asset.id,
+                version_number=asset.version,
+                change_summary=f"Deleted column '{column_name}'",
+                metadata_snapshot={
+                    "version": asset.version,
+                    "is_diff": True,
+                    "changes": [{
+                        "field": "Columns list",
+                        "old": f"Column '{column_name}'",
+                        "new": "(deleted)"
+                    }]
+                }
+            )
+            self.db.add(db_version)
 
         # Log Activity
         self.log_activity(workspace_id, "column_deleted", f"Deleted column '{column_name}' from CSV asset '{asset_name}'.", asset_id, commit=False)

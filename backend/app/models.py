@@ -40,7 +40,7 @@ class Asset(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
     # Relationships
-    columns = relationship("ColumnModel", back_populates="asset", cascade="all, delete-orphan")
+    columns = relationship("ColumnModel", back_populates="asset", cascade="all, delete-orphan", order_by="ColumnModel.created_at")
     version_histories = relationship("VersionHistory", back_populates="asset", cascade="all, delete-orphan")
 
 class ColumnModel(Base):
