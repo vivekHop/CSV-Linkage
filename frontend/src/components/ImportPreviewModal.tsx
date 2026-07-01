@@ -8,6 +8,12 @@ import type { ImportDraft } from '../types';
 import { useCustomDialog } from './CustomDialog';
 
 // IST date+time formatter
+// Backend returns UTC without 'Z' — append it so browsers parse as UTC, not local time.
+const toUtcIso = (s: string): string => {
+  if (!s) return s;
+  if (s.endsWith('Z') || s.includes('+') || /[Tt]\d{2}:\d{2}:\d{2}[-+]/.test(s)) return s;
+  return s + 'Z';
+};
 const fmtIST = (isoStr: string | null | undefined): string => {
   if (!isoStr) return 'N/A';
   try {
@@ -16,7 +22,7 @@ const fmtIST = (isoStr: string | null | undefined): string => {
       day: '2-digit', month: 'short', year: 'numeric',
       hour: '2-digit', minute: '2-digit', second: '2-digit',
       hour12: false,
-    }).format(new Date(isoStr));
+    }).format(new Date(toUtcIso(isoStr)));
   } catch { return isoStr; }
 };
 

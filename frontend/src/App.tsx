@@ -1904,7 +1904,10 @@ export default function App() {
     if (!hasMetadataChange) return; // nothing actually changed — skip backend call
 
     try {
-      await api.updateAsset(assetId, updates);
+      // Send mergedAttributes (not raw updates.custom_attributes) so that system
+      // keys like position and color are preserved in the backend record.
+      const apiPayload = { ...updates, custom_attributes: mergedAttributes };
+      await api.updateAsset(assetId, apiPayload);
       // Fetch activities in the background to update the log
       api.getActivities(30).then(setActivities).catch(console.error);
     } catch (err) {

@@ -5,6 +5,16 @@ import type { Asset, Column, VersionHistory, Relationship } from '../types';
 import { useCustomDialog } from './CustomDialog';
 
 // ─── IST date formatter (India Standard Time, UTC+5:30) ───────────────────────
+// Backend stores UTC timestamps WITHOUT 'Z' suffix. Browsers treat strings without
+// a timezone designator as LOCAL time — appending 'Z' forces UTC interpretation
+// so Intl.DateTimeFormat can then correctly convert to Asia/Kolkata (+5:30).
+const toUtcIso = (s: string): string => {
+  if (!s) return s;
+  // Already has timezone info
+  if (s.endsWith('Z') || s.includes('+') || /[Tt]\d{2}:\d{2}:\d{2}[-+]/.test(s)) return s;
+  return s + 'Z';
+};
+
 const fmtIST = (isoStr: string | null | undefined, opts?: Intl.DateTimeFormatOptions): string => {
   if (!isoStr) return 'N/A';
   try {
@@ -18,11 +28,14 @@ const fmtIST = (isoStr: string | null | undefined, opts?: Intl.DateTimeFormatOpt
       second: '2-digit',
       hour12: false,
     };
-    return new Intl.DateTimeFormat('en-IN', { ...base, ...opts }).format(new Date(isoStr));
+    return new Intl.DateTimeFormat('en-IN', { ...base, ...opts }).format(new Date(toUtcIso(isoStr)));
   } catch {
     return isoStr;
   }
 };
+
+// Keys stored in custom_attributes for internal canvas use — not user-editable
+const SYSTEM_ATTR_KEYS = new Set(['position', 'color', 'width', 'height', 'createdAt']);
 
 interface RightSidebarProps {
   selectedAsset: Asset | null;
@@ -335,11 +348,13 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
         setAssetTags(selectedAsset.tags || []);
         setPrevAssetId(selectedAsset.id);
         
-        // Parse custom attributes
+        // Parse custom attributes — skip internal system keys
         const customAttrs: Record<string, string> = {};
         if (selectedAsset.custom_attributes) {
           Object.entries(selectedAsset.custom_attributes).forEach(([k, v]) => {
-            customAttrs[k] = String(v);
+            if (!SYSTEM_ATTR_KEYS.has(k)) {
+              customAttrs[k] = String(v);
+            }
           });
         }
         setAssetCustom(customAttrs);

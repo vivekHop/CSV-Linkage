@@ -3,6 +3,12 @@ import { Network, History, Trash2, ArrowRight, Clock, Database, Columns, PlusCir
 import type { Asset, Relationship, ActivityLog } from '../types';
 
 // IST date+time formatter (India Standard Time, UTC+5:30)
+// Backend returns UTC without 'Z' — append it so browsers parse as UTC, not local time.
+const toUtcIso = (s: string): string => {
+  if (!s) return s;
+  if (s.endsWith('Z') || s.includes('+') || /[Tt]\d{2}:\d{2}:\d{2}[-+]/.test(s)) return s;
+  return s + 'Z';
+};
 const fmtIST = (isoStr: string | null | undefined): string => {
   if (!isoStr) return 'N/A';
   try {
@@ -15,7 +21,7 @@ const fmtIST = (isoStr: string | null | undefined): string => {
       minute: '2-digit',
       second: '2-digit',
       hour12: false,
-    }).format(new Date(isoStr));
+    }).format(new Date(toUtcIso(isoStr)));
   } catch {
     return isoStr;
   }

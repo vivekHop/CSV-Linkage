@@ -283,11 +283,18 @@ class AssetRepository(BaseRepository):
         TRACKED_FIELDS = {"name", "description", "owner", "notes", "tags", "custom_attributes"}
         metadata_updates = {k: v for k, v in updates.items() if k in TRACKED_FIELDS}
 
-        # Capture old values BEFORE mutation (setattr changes the ORM object in-place,
-        # so reading after setattr gives the new value for both old and new snapshots).
-        import copy
+        # Capture old values BEFORE mutation using JSON round-trip.
+        # copy.deepcopy keeps SQLAlchemy's mutable tracking wrappers, so the
+        # "old" copy reflects mutations too. json.loads(json.dumps()) gives us
+        # a plain Python dict that is fully detached from the ORM object.
+        import json as _json
+        def _snap(val):
+            try:
+                return _json.loads(_json.dumps(val, default=str))
+            except Exception:
+                return val
         old_values: Dict[str, Any] = {
-            f: copy.deepcopy(getattr(db_asset, f, None)) for f in TRACKED_FIELDS
+            f: _snap(getattr(db_asset, f, None)) for f in TRACKED_FIELDS
         }
 
         # Update fields
@@ -490,7 +497,8 @@ class ColumnRepository(BaseRepository):
         return self.db.query(ColumnModel).filter(ColumnModel.id == column_id).first()
 
     def get_by_asset_id(self, asset_id: str) -> List[ColumnModel]:
-        return self.db.query(ColumnModel).filter(ColumnModel.asset_id == asset_id).order_by(ColumnModel.name).all()
+        # Order by created_at to preserve original column sequence from the imported sheet
+        return self.db.query(ColumnModel).filter(ColumnModel.asset_id == asset_id).order_by(ColumnModel.created_at).all()
 
     def create(self, asset_id: str, column_data: Dict[str, Any], commit: bool = True) -> ColumnModel:
         db_col = ColumnModel(
