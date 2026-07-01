@@ -534,7 +534,13 @@ class ColumnRepository(BaseRepository):
 
         for key, value in updates.items():
             if hasattr(db_col, key):
-                setattr(db_col, key, value)
+                if key == "custom_attributes" and isinstance(value, dict):
+                    cleaned_attrs = {**value}
+                    if "formula" in cleaned_attrs and not cleaned_attrs["formula"]:
+                        cleaned_attrs.pop("formula", None)
+                    db_col.custom_attributes = cleaned_attrs
+                else:
+                    setattr(db_col, key, value)
 
         db_col.updated_at = datetime.utcnow()
         self.db.flush()

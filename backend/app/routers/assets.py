@@ -313,7 +313,7 @@ async def profile_preview(
                                     return f"[{full_ref_name}][{other_headers[c_idx - 1]}]"
                             return match.group(0)
                             
-                        pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?([A-Za-z]+)([0-9]+)"
+                        pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?\$?([A-Za-z]+)\$?([0-9]+)"
                         readable_formula = re.sub(pattern, replace_ref, formula_str)
                         if readable_formula.startswith("="):
                             readable_formula = readable_formula[1:]
@@ -384,7 +384,7 @@ async def profile_preview(
                     cell_val = ws_f.cell(row=2, column=c_idx + 1).value
                     if isinstance(cell_val, str) and cell_val.startswith("="):
                         formula_str = cell_val
-                        pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?([A-Za-z]+)([0-9]+)"
+                        pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?\$?([A-Za-z]+)\$?([0-9]+)"
                         matches = re.findall(pattern, formula_str)
                         seen_sources = set()
                         for sheet_q, sheet_n, col_let, row_num in matches:

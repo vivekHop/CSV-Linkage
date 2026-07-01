@@ -1928,34 +1928,48 @@ export default function App() {
       // Find the asset of this column
       const parentAsset = assets.find(a => a.columns?.some(c => c.id === columnId));
       if (parentAsset) {
-        const referencedColIds = findReferencedColumnIds(newFormula, parentAsset.id, assets);
-        
-        // Find existing DERIVES_FROM relationships to this destination column
-        const existingRels = relationships.filter(
-          r => r.destination_node_type === 'column' && 
-               r.destination_node_id === columnId && 
-               r.relationship_type === 'DERIVES_FROM'
-        );
-        
-        const existingSourceIds = existingRels.map(r => r.source_node_id);
-        
-        // Relationships to delete
-        const relsToDelete = existingRels.filter(r => !referencedColIds.includes(r.source_node_id));
-        // Relationships to create
-        const sourceIdsToCreate = referencedColIds.filter(id => !existingSourceIds.includes(id));
-        // Relationships to update (existing ones that are still referenced)
-        const relsToUpdate = existingRels.filter(r => referencedColIds.includes(r.source_node_id));
+        let relsToDelete: Relationship[] = [];
+        let sourceIdsToCreate: string[] = [];
+        let relsToUpdate: Relationship[] = [];
+
+        if (newFormula) {
+          const referencedColIds = findReferencedColumnIds(newFormula, parentAsset.id, assets);
+          
+          // Find ALL existing relationships to this destination column (regardless of type)
+          const existingRels = relationships.filter(
+            r => r.destination_node_type === 'column' && 
+                 r.destination_node_id === columnId
+          );
+          
+          const existingSourceIds = existingRels.map(r => r.source_node_id);
+          
+          // Delete anything not referenced in formula
+          relsToDelete = existingRels.filter(r => !referencedColIds.includes(r.source_node_id));
+          // Create for any referenced source not already connected
+          sourceIdsToCreate = referencedColIds.filter(id => !existingSourceIds.includes(id));
+          // Update any remaining ones to DERIVES_FROM
+          relsToUpdate = existingRels.filter(r => referencedColIds.includes(r.source_node_id));
+        } else {
+          // If formula is cleared, delete all DERIVES_FROM relationships for this column
+          const existingRels = relationships.filter(
+            r => r.destination_node_type === 'column' && 
+                 r.destination_node_id === columnId &&
+                 r.relationship_type === 'DERIVES_FROM'
+          );
+          relsToDelete = existingRels;
+        }
         
         if (relsToDelete.length > 0 || sourceIdsToCreate.length > 0 || relsToUpdate.length > 0) {
           // Perform optimistic relationship update
           setRelationships(prev => {
             let updated = prev.filter(r => !relsToDelete.some(td => td.id === r.id));
             
-            // Update formula for existing ones
+            // Update type and formula for existing ones
             updated = updated.map(r => {
               if (relsToUpdate.some(tu => tu.id === r.id)) {
                 return {
                   ...r,
+                  relationship_type: 'DERIVES_FROM',
                   metadata_json: {
                     ...(r.metadata_json || {}),
                     formula: newFormula
@@ -2019,6 +2033,7 @@ export default function App() {
           relsToUpdate.forEach(async (r) => {
             try {
               await api.updateRelationship(r.id, {
+                relationship_type: 'DERIVES_FROM',
                 metadata_json: {
                   ...(r.metadata_json || {}),
                   formula: newFormula
