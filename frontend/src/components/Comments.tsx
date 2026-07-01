@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { MessageSquare, X, Send, MessageCircle, ChevronRight, ChevronUp, ChevronDown, Trash2, Minus } from 'lucide-react';
+import { useCustomDialog } from './CustomDialog';
 
 export interface CanvasComment {
   id: string;
@@ -22,6 +23,7 @@ export const CommentNode: React.FC<{
 }> = ({ data }) => {
   const { comment, onDelete, onToggleOpen } = data;
   const isOpen = comment.isOpen || false;
+  const dialog = useCustomDialog();
 
   return (
     <div 
@@ -82,9 +84,10 @@ export const CommentNode: React.FC<{
                 <Minus size={11} />
               </button>
               <button
-                onClick={(e) => {
+                onClick={async (e) => {
                   e.stopPropagation();
-                  if (confirm("Delete this comment permanently?")) {
+                  const confirmed = await dialog.confirm("Delete Comment", "Are you sure you want to delete this comment permanently?", "danger");
+                  if (confirmed) {
                     onDelete(comment.id);
                   }
                 }}
@@ -209,6 +212,7 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
   expanded,
   onToggleExpanded,
 }) => {
+  const dialog = useCustomDialog();
   return (
     <div className="flex flex-col h-full bg-workspace-900">
       <div 
@@ -289,9 +293,10 @@ export const CommentsPanel: React.FC<CommentsPanelProps> = ({
                           <Minus size={10} />
                         </button>
                         <button
-                          onClick={(e) => {
+                          onClick={async (e) => {
                             e.stopPropagation();
-                            if (confirm("Delete this comment permanently?")) {
+                            const confirmed = await dialog.confirm("Delete Comment", "Are you sure you want to delete this comment permanently?", "danger");
+                            if (confirmed) {
                               onDeleteComment(c.id);
                             }
                           }}
