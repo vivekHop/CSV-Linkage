@@ -121,11 +121,11 @@ const findReferencedColumnIds = (
   const referencedIds: string[] = [];
   let cleanedExpr = expression;
 
-  // 1. Search for [tableName][colName] pattern first
-  const doubleBracketRegex = /\[([^\]]+)\]\s*\[([^\]]+)\]/g;
+  // 1. Search for [tableName][colName] pattern first (supporting nested brackets in table name)
+  const doubleBracketRegex = /\[(.[^\[]*?\[.+?\]|[^\]]+)\]\s*\[([^\]]+)\]/g;
   let match;
   while ((match = doubleBracketRegex.exec(expression)) !== null) {
-    const tableName = match[1].trim().toLowerCase();
+    const tableName = match[1].trim();
     const colName = match[2].trim().toLowerCase();
     
     const asset = allAssets.find(a => matchesTableName(a.name, tableName));

@@ -133,10 +133,10 @@ const FormulaInput: React.FC<FormulaInputProps> = ({
       const isColumnQuery = prefix.endsWith(']');
       
       if (isColumnQuery) {
-        // Find corresponding open bracket of the table name
-        const prevOpenBracket = prefix.lastIndexOf('[');
-        if (prevOpenBracket !== -1) {
-          const tableName = prefix.slice(prevOpenBracket + 1, prefix.length - 1).trim();
+        // Match table name from prefix using our robust regex
+        const tableMatch = prefix.match(/\[(.[^\[]*?\[.+?\]|[^\]]+)\]$/);
+        if (tableMatch) {
+          const tableName = tableMatch[1].trim();
           
           // Find matching asset
           const asset = assets.find(a => matchesTableName(a.name, tableName));
