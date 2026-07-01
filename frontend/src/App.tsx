@@ -171,6 +171,83 @@ const findReferencedColumnIds = (
   return Array.from(new Set(referencedIds));
 };
 
+interface ReferencedNode {
+  type: 'column' | 'asset';
+  id: string;
+}
+
+const findReferencedLineageNodes = (
+  expression: string,
+  destAssetId: string,
+  allAssets: Asset[]
+): ReferencedNode[] => {
+  const referencedNodes: ReferencedNode[] = [];
+  let cleanedExpr = expression;
+
+  // 1. Search for [tableName][colName] pattern first (supporting nested brackets in table name)
+  const doubleBracketRegex = /\[(.[^\[]*?\[.+?\]|[^\]]+)\]\s*\[([^\]]+)\]/g;
+  let match;
+  while ((match = doubleBracketRegex.exec(expression)) !== null) {
+    const tableName = match[1].trim();
+    const colName = match[2].trim().toLowerCase();
+    
+    const asset = allAssets.find(a => matchesTableName(a.name, tableName));
+    
+    if (asset) {
+      const col = asset.columns?.find(c => c.name.toLowerCase() === colName);
+      if (col) {
+        referencedNodes.push({ type: 'column', id: col.id });
+      }
+    }
+    // Remove to avoid double matching
+    cleanedExpr = cleanedExpr.replace(match[0], '');
+  }
+
+  // 2. Search for [ref] pattern (can be [table.col], [table] only, or just [col])
+  const singleBracketRegex = /\[([^\]]+)\]/g;
+  while ((match = singleBracketRegex.exec(cleanedExpr)) !== null) {
+    const ref = match[1].trim();
+    if (ref.includes('.')) {
+      const parts = ref.split('.');
+      const colName = parts[parts.length - 1].trim().toLowerCase();
+      const tableName = parts.slice(0, parts.length - 1).join('.').trim().toLowerCase();
+      
+      const asset = allAssets.find(a => matchesTableName(a.name, tableName));
+      
+      if (asset) {
+        const col = asset.columns?.find(c => c.name.toLowerCase() === colName);
+        if (col) {
+          referencedNodes.push({ type: 'column', id: col.id });
+        }
+      }
+    } else {
+      // Check if it's a table name first
+      const asset = allAssets.find(a => matchesTableName(a.name, ref));
+      if (asset) {
+        referencedNodes.push({ type: 'asset', id: asset.id });
+      } else {
+        // Fallback to checking if it's a column name in the destination asset
+        const destAsset = allAssets.find(a => a.id === destAssetId);
+        if (destAsset) {
+          const col = destAsset.columns?.find(c => c.name.toLowerCase() === ref.toLowerCase());
+          if (col) {
+            referencedNodes.push({ type: 'column', id: col.id });
+          }
+        }
+      }
+    }
+  }
+  
+  // Return unique nodes by type and id
+  const seen = new Set<string>();
+  return referencedNodes.filter(node => {
+    const key = `${node.type}:${node.id}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
 // Helper to remove a column reference from a formula string and clean up mathematical operators
 const removeReferenceFromFormula = (formula: string, refName: string): string => {
   let cleaned = formula;
@@ -1929,11 +2006,11 @@ export default function App() {
       const parentAsset = assets.find(a => a.columns?.some(c => c.id === columnId));
       if (parentAsset) {
         let relsToDelete: Relationship[] = [];
-        let sourceIdsToCreate: string[] = [];
+        let nodesToCreate: ReferencedNode[] = [];
         let relsToUpdate: Relationship[] = [];
 
         if (newFormula) {
-          const referencedColIds = findReferencedColumnIds(newFormula, parentAsset.id, assets);
+          const referencedNodes = findReferencedLineageNodes(newFormula, parentAsset.id, assets);
           
           // Find ALL existing relationships to this destination column (regardless of type)
           const existingRels = relationships.filter(
@@ -1941,14 +2018,18 @@ export default function App() {
                  r.destination_node_id === columnId
           );
           
-          const existingSourceIds = existingRels.map(r => r.source_node_id);
-          
           // Delete anything not referenced in formula
-          relsToDelete = existingRels.filter(r => !referencedColIds.includes(r.source_node_id));
-          // Create for any referenced source not already connected
-          sourceIdsToCreate = referencedColIds.filter(id => !existingSourceIds.includes(id));
+          relsToDelete = existingRels.filter(r => 
+            !referencedNodes.some(rn => rn.type === r.source_node_type && rn.id === r.source_node_id)
+          );
+          // Create for any referenced node not already connected
+          nodesToCreate = referencedNodes.filter(rn => 
+            !existingRels.some(r => r.source_node_type === rn.type && r.source_node_id === rn.id)
+          );
           // Update any remaining ones to DERIVES_FROM
-          relsToUpdate = existingRels.filter(r => referencedColIds.includes(r.source_node_id));
+          relsToUpdate = existingRels.filter(r => 
+            referencedNodes.some(rn => rn.type === r.source_node_type && rn.id === r.source_node_id)
+          );
         } else {
           // If formula is cleared, delete all DERIVES_FROM relationships for this column
           const existingRels = relationships.filter(
@@ -1959,7 +2040,7 @@ export default function App() {
           relsToDelete = existingRels;
         }
         
-        if (relsToDelete.length > 0 || sourceIdsToCreate.length > 0 || relsToUpdate.length > 0) {
+        if (relsToDelete.length > 0 || nodesToCreate.length > 0 || relsToUpdate.length > 0) {
           // Perform optimistic relationship update
           setRelationships(prev => {
             let updated = prev.filter(r => !relsToDelete.some(td => td.id === r.id));
@@ -1979,12 +2060,12 @@ export default function App() {
               return r;
             });
 
-            sourceIdsToCreate.forEach(srcId => {
+            nodesToCreate.forEach(node => {
               const tempId = `temp_rel_${Math.random().toString(36).substring(2, 9)}`;
               updated.push({
                 id: tempId,
-                source_node_type: 'column',
-                source_node_id: srcId,
+                source_node_type: node.type,
+                source_node_id: node.id,
                 destination_node_type: 'column',
                 destination_node_id: columnId,
                 relationship_type: 'DERIVES_FROM',
@@ -2006,11 +2087,11 @@ export default function App() {
             }
           });
           
-          sourceIdsToCreate.forEach(async (srcId) => {
+          nodesToCreate.forEach(async (node) => {
             try {
               const created = await api.createRelationship({
-                source_node_type: 'column',
-                source_node_id: srcId,
+                source_node_type: node.type,
+                source_node_id: node.id,
                 destination_node_type: 'column',
                 destination_node_id: columnId,
                 relationship_type: 'DERIVES_FROM',
@@ -2018,7 +2099,8 @@ export default function App() {
               });
               setRelationships((prev) =>
                 prev.map((r) =>
-                  r.source_node_id === srcId &&
+                  r.source_node_type === node.type &&
+                  r.source_node_id === node.id &&
                   r.destination_node_id === columnId &&
                   r.id.startsWith('temp_rel_')
                     ? created

@@ -1337,65 +1337,71 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     <label className="text-[10px] font-bold text-brand-teal uppercase tracking-wider block">
                       Incoming Lineage Mapping Type
                     </label>
-                    <div className="space-y-2">
-                      {localRels.map((rel) => {
-                        let sourceLabel = '';
-                        if (rel.source_node_type === 'column') {
-                          const srcCol = assets
-                            .flatMap((a) => a.columns || [])
-                            .find((c) => c.id === rel.source_node_id);
-                          const srcAsset = assets.find((a) =>
-                            a.columns?.some((c) => c.id === rel.source_node_id)
-                          );
-                          sourceLabel = srcCol && srcAsset 
-                            ? `${srcAsset.name}.${srcCol.name}` 
-                            : `Col [${rel.source_node_id.slice(0, 5)}]`;
-                        } else {
-                          const srcAsset = assets.find((a) => a.id === rel.source_node_id);
-                          sourceLabel = srcAsset ? srcAsset.name : `Table [${rel.source_node_id.slice(0, 5)}]`;
-                        }
+                    <div className="p-3 bg-workspace-900 border border-workspace-750 rounded-lg space-y-3">
+                      {/* Show list of sources */}
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-workspace-400 font-bold block uppercase tracking-wider font-mono">
+                          Source Columns:
+                        </span>
+                        <div className="flex flex-wrap gap-1">
+                          {localRels.map((rel) => {
+                            let sourceLabel = '';
+                            if (rel.source_node_type === 'column') {
+                              const srcCol = assets
+                                .flatMap((a) => a.columns || [])
+                                .find((c) => c.id === rel.source_node_id);
+                              const srcAsset = assets.find((a) =>
+                                a.columns?.some((c) => c.id === rel.source_node_id)
+                              );
+                              sourceLabel = srcCol && srcAsset 
+                                ? `${srcAsset.name}.${srcCol.name}` 
+                                : `Col [${rel.source_node_id.slice(0, 5)}]`;
+                            } else {
+                              const srcAsset = assets.find((a) => a.id === rel.source_node_id);
+                              sourceLabel = srcAsset ? srcAsset.name : `Table [${rel.source_node_id.slice(0, 5)}]`;
+                            }
+                            return (
+                              <span key={rel.id} className="px-2 py-0.5 bg-workspace-800 text-workspace-200 border border-workspace-750 rounded font-mono text-[10px] whitespace-normal break-all" title={sourceLabel}>
+                                {sourceLabel}
+                              </span>
+                            );
+                          })}
+                        </div>
+                      </div>
 
-                        return (
-                          <div key={rel.id} className="space-y-1.5 p-2.5 bg-workspace-900 border border-workspace-750 rounded-lg">
-                            <span className="text-[10px] text-workspace-400 font-mono block truncate">
-                              Source: {sourceLabel}
-                            </span>
-                            <select
-                              value={rel.relationship_type || ''}
-                              onChange={(e) => {
-                                const newType = e.target.value as any;
-                                setLocalRels(prev => prev.map(r => {
-                                  if (r.id === rel.id) {
-                                    const nextMeta = { ...(r.metadata_json || {}) };
-                                    if (newType !== 'DERIVES_FROM') {
-                                      delete nextMeta.formula;
-                                      const otherDerives = prev.some(other => other.id !== rel.id && other.relationship_type === 'DERIVES_FROM');
-                                      if (!otherDerives) {
-                                        setColumnFormula('');
-                                      }
-                                    } else {
-                                      nextMeta.formula = nextMeta.formula || columnFormula || '';
-                                    }
-                                    return {
-                                      ...r,
-                                      relationship_type: newType || null,
-                                      metadata_json: nextMeta
-                                    };
-                                  }
-                                  return r;
-                                }));
-                              }}
-                              className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-2 py-1 text-xs text-workspace-50 outline-none"
-                            >
-                              <option value="">-- Select Lineage Type (Optional) --</option>
-                              <option value="MAPS_TO">MAPS_TO (Direct Schema Map)</option>
-                              <option value="DERIVES_FROM">DERIVES_FROM (Transformation Formula)</option>
-                              <option value="LOOKUP_FROM">LOOKUP_FROM (Reference Lookup)</option>
-                              <option value="COPIED_FROM">COPIED_FROM (Replicated Data)</option>
-                            </select>
-                          </div>
-                        );
-                      })}
+                      {/* Single dropdown selector */}
+                      <div className="space-y-1">
+                        <span className="text-[10px] text-workspace-400 font-bold block uppercase tracking-wider font-mono">
+                          Linkage Type:
+                        </span>
+                        <select
+                          value={localRels[0]?.relationship_type || ''}
+                          onChange={(e) => {
+                            const newType = e.target.value as any;
+                            setLocalRels(prev => prev.map(r => {
+                              const nextMeta = { ...(r.metadata_json || {}) };
+                              if (newType !== 'DERIVES_FROM') {
+                                delete nextMeta.formula;
+                                setColumnFormula('');
+                              } else {
+                                nextMeta.formula = nextMeta.formula || columnFormula || '';
+                              }
+                              return {
+                                ...r,
+                                relationship_type: newType || null,
+                                metadata_json: nextMeta
+                              };
+                            }));
+                          }}
+                          className="w-full bg-workspace-800 border border-workspace-750 focus:border-brand-teal rounded-lg px-2.5 py-1.5 text-xs text-workspace-50 outline-none"
+                        >
+                          <option value="">-- Select Lineage Type --</option>
+                          <option value="MAPS_TO">MAPS_TO (Direct Schema Map)</option>
+                          <option value="DERIVES_FROM">DERIVES_FROM (Transformation Formula)</option>
+                          <option value="LOOKUP_FROM">LOOKUP_FROM (Reference Lookup)</option>
+                          <option value="COPIED_FROM">COPIED_FROM (Replicated Data)</option>
+                        </select>
+                      </div>
                     </div>
 
                     {localRels.some((r) => r.relationship_type === 'DERIVES_FROM') && (
