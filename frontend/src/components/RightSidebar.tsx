@@ -372,78 +372,86 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   // Save Handlers
   const handleSaveAsset = async () => {
     if (!selectedAsset) return;
-    setIsSaving(true);
-    setSaveStatus('saving');
-    
-    const savePromise = onUpdateAsset(selectedAsset.id, {
-      name: assetName,
-      owner: assetOwner,
-      description: assetDesc,
-      notes: assetNotes,
-      tags: assetTags,
-      custom_attributes: assetCustom,
-    });
 
-    if (showToast) {
-      showToast('Saving table metadata...', 'info');
+    // Check if anything actually changed before calling backend
+    const noChange =
+      assetName === (selectedAsset.name || '') &&
+      assetOwner === (selectedAsset.owner || '') &&
+      assetDesc === (selectedAsset.description || '') &&
+      assetNotes === (selectedAsset.notes || '') &&
+      JSON.stringify(assetTags) === JSON.stringify(selectedAsset.tags || []) &&
+      JSON.stringify(assetCustom) === JSON.stringify(
+        Object.fromEntries(
+          Object.entries(selectedAsset.custom_attributes || {}).map(([k, v]) => [k, String(v)])
+        )
+      );
+
+    if (noChange) {
+      if (showToast) showToast('No changes to save.', 'info');
+      return;
     }
 
-    setTimeout(() => {
-      setSaveStatus('saved');
-      setIsSaving(false);
-      setTimeout(() => setSaveStatus('idle'), 2000);
-      if (showToast) {
-        showToast('Table metadata saved successfully!', 'success');
-      }
-    }, 200);
+    setIsSaving(true);
+    setSaveStatus('saving');
 
     try {
-      await savePromise;
+      await onUpdateAsset(selectedAsset.id, {
+        name: assetName,
+        owner: assetOwner,
+        description: assetDesc,
+        notes: assetNotes,
+        tags: assetTags,
+        custom_attributes: assetCustom,
+      });
+      setSaveStatus('saved');
+      if (showToast) showToast('Table metadata saved!', 'success');
+      // Refresh version history to reflect new entry
+      fetchVersionHistory(selectedAsset.id);
     } catch (err) {
       setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
-      if (showToast) {
-        showToast('Failed to save table metadata.', 'error');
-      }
+      if (showToast) showToast('Failed to save table metadata.', 'error');
+    } finally {
+      setIsSaving(false);
+      setTimeout(() => setSaveStatus('idle'), 2500);
     }
   };
 
   const handleSaveColumn = async () => {
     if (!selectedColumn) return;
+
+    // Check if anything actually changed before calling backend
+    const noChange =
+      columnDesc === (selectedColumn.description || '') &&
+      columnNotes === (selectedColumn.notes || '') &&
+      JSON.stringify(columnTags) === JSON.stringify(selectedColumn.tags || []) &&
+      columnFormula === (selectedColumn.custom_attributes?.formula || '');
+
+    if (noChange) {
+      if (showToast) showToast('No changes to save.', 'info');
+      return;
+    }
+
     setIsSaving(true);
     setSaveStatus('saving');
 
-    const savePromise = onUpdateColumn(selectedColumn.id, {
-      description: columnDesc,
-      notes: columnNotes,
-      tags: columnTags,
-      custom_attributes: {
-        ...(selectedColumn.custom_attributes || {}),
-        formula: columnFormula,
-      },
-    });
-
-    if (showToast) {
-      showToast('Saving column metadata...', 'info');
-    }
-
-    setTimeout(() => {
-      setSaveStatus('saved');
-      setIsSaving(false);
-      setTimeout(() => setSaveStatus('idle'), 2000);
-      if (showToast) {
-        showToast('Column metadata saved successfully!', 'success');
-      }
-    }, 200);
-
     try {
-      await savePromise;
+      await onUpdateColumn(selectedColumn.id, {
+        description: columnDesc,
+        notes: columnNotes,
+        tags: columnTags,
+        custom_attributes: {
+          ...(selectedColumn.custom_attributes || {}),
+          formula: columnFormula,
+        },
+      });
+      setSaveStatus('saved');
+      if (showToast) showToast('Column metadata saved!', 'success');
     } catch (err) {
       setSaveStatus('error');
-      setTimeout(() => setSaveStatus('idle'), 3000);
-      if (showToast) {
-        showToast('Failed to save column metadata.', 'error');
-      }
+      if (showToast) showToast('Failed to save column metadata.', 'error');
+    } finally {
+      setIsSaving(false);
+      setTimeout(() => setSaveStatus('idle'), 2500);
     }
   };
 

@@ -1864,20 +1864,44 @@ export default function App() {
     const existingAsset = assets.find((a) => a.id === assetId);
     if (!existingAsset) return;
 
+    // Detect if any tracked metadata field actually changed before sending to backend
+    const TRACKED = ['name', 'description', 'owner', 'notes', 'tags', 'custom_attributes'] as const;
+    const hasMetadataChange = TRACKED.some((field) => {
+      if (!(field in updates)) return false;
+      const oldVal = JSON.stringify((existingAsset as any)[field] ?? null);
+      const newVal = JSON.stringify((updates as any)[field] ?? null);
+      return oldVal !== newVal;
+    });
+
     const originalAssets = assets;
     const mergedAttributes = {
       ...existingAsset.custom_attributes,
       ...updates.custom_attributes,
     };
-    
+
     const updatedAsset = {
       ...existingAsset,
       ...updates,
       custom_attributes: mergedAttributes,
     };
 
-    // Optimistically update local assets state
+    // Optimistically update local assets state — BUT also patch the ReactFlow node
+    // data in-place so the canvas does NOT rebuild its edges and cause a flicker.
     setAssets((prev) => prev.map((a) => (a.id === assetId ? updatedAsset : a)));
+    setNodes((prev) =>
+      prev.map((n) => {
+        if (n.id !== assetId) return n;
+        return {
+          ...n,
+          data: {
+            ...n.data,
+            name: updatedAsset.name,
+          },
+        };
+      })
+    );
+
+    if (!hasMetadataChange) return; // nothing actually changed — skip backend call
 
     try {
       await api.updateAsset(assetId, updates);
@@ -2027,6 +2051,26 @@ export default function App() {
         return asset;
       })
     );
+
+    // Patch the ReactFlow node data in-place (only the parent asset node of this column)
+    // so edges are NOT removed and re-added — preventing the animation flicker.
+    const parentAssetId = assets.find(a => a.columns?.some(c => c.id === columnId))?.id;
+    if (parentAssetId) {
+      setNodes((prev) =>
+        prev.map((n) => {
+          if (n.id !== parentAssetId) return n;
+          const updatedCols = (n.data.columns || []).map((col: any) => {
+            if (col.id !== columnId) return col;
+            const mergedAttributes = {
+              ...(col.custom_attributes || {}),
+              ...(updates.custom_attributes || {}),
+            };
+            return { ...col, ...updates, custom_attributes: mergedAttributes };
+          });
+          return { ...n, data: { ...n.data, columns: updatedCols } };
+        })
+      );
+    }
 
     try {
       await api.updateColumn(columnId, updates);

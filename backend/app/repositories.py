@@ -278,50 +278,67 @@ class AssetRepository(BaseRepository):
         db_asset = self.get_by_id(asset_id)
         if not db_asset:
             return None
-            
+
         old_snapshot = create_asset_snapshot(db_asset)
-            
+
+        # Filter to only the metadata fields we care about tracking
+        TRACKED_FIELDS = {"name", "description", "owner", "notes", "tags", "custom_attributes"}
+        metadata_updates = {k: v for k, v in updates.items() if k in TRACKED_FIELDS}
+
         # Update fields
         for key, value in updates.items():
             if hasattr(db_asset, key):
                 setattr(db_asset, key, value)
-                
-        # Increment version on update
-        db_asset.version += 1
+
         db_asset.updated_at = datetime.utcnow()
-        
         self.db.flush()
-        
+
         new_snapshot = create_asset_snapshot(db_asset)
-        
-        # Save new version history (only save what changed!)
-        change_summary = f"Updated metadata: {', '.join(updates.keys())}"
-        diff_changes = compute_snapshot_diff(old_snapshot, new_snapshot)
-        
-        db_version = VersionHistory(
-            asset_id=db_asset.id,
-            version_number=db_asset.version,
-            change_summary=change_summary,
-            metadata_snapshot={
-                "version": db_asset.version,
-                "name": db_asset.name,
-                "owner": db_asset.owner,
-                "description": db_asset.description,
-                "notes": db_asset.notes,
-                "tags": db_asset.tags,
-                "is_diff": True,
-                "changes": diff_changes
-            }
-        )
-        self.db.add(db_version)
-        
-        # Log Activity
-        self.log_activity(db_asset.workspace_id, "asset_updated", f"Updated CSV asset metadata for '{db_asset.name}': {change_summary}", db_asset.id, commit=False)
-        
+
+        # Only create version history and activity log if metadata fields actually changed
+        if metadata_updates:
+            diff_changes = compute_snapshot_diff(old_snapshot, new_snapshot)
+
+            if diff_changes:
+                # Increment version only when there's a real change
+                db_asset.version += 1
+                db_asset.updated_at = datetime.utcnow()
+                self.db.flush()
+
+                changed_field_labels = [c["field"] for c in diff_changes]
+                change_summary = f"Updated: {', '.join(changed_field_labels)}"
+
+                db_version = VersionHistory(
+                    asset_id=db_asset.id,
+                    version_number=db_asset.version,
+                    change_summary=change_summary,
+                    metadata_snapshot={
+                        "version": db_asset.version,
+                        "name": db_asset.name,
+                        "owner": db_asset.owner,
+                        "description": db_asset.description,
+                        "notes": db_asset.notes,
+                        "tags": db_asset.tags,
+                        "is_diff": True,
+                        "changes": diff_changes
+                    }
+                )
+                self.db.add(db_version)
+
+                # Build a human-readable activity detail from the diff
+                detail_parts = []
+                for ch in diff_changes:
+                    field = ch["field"]
+                    old_v = ch["old"] or "(empty)"
+                    new_v = ch["new"] or "(empty)"
+                    detail_parts.append(f"{field}: \"{old_v}\" → \"{new_v}\"")
+                activity_detail = f"Updated '{db_asset.name}': " + "; ".join(detail_parts)
+                self.log_activity(db_asset.workspace_id, "asset_updated", activity_detail, db_asset.id, commit=False)
+
         if commit:
             self.db.commit()
             self.db.refresh(db_asset)
-        
+
         # Broadcast via WebSockets
         self._trigger_broadcast("asset_updated", {
             "workspace_id": db_asset.workspace_id,
@@ -330,7 +347,7 @@ class AssetRepository(BaseRepository):
             "version": db_asset.version,
             "updates": updates
         })
-        
+
         return db_asset
 
     def delete(self, asset_id: str, commit: bool = True) -> bool:
@@ -468,25 +485,49 @@ class ColumnRepository(BaseRepository):
         db_col = self.get_by_id(column_id)
         if not db_col:
             return None
-            
+
+        TRACKED_COL_FIELDS = {"description", "notes", "tags", "custom_attributes"}
+        metadata_updates = {k: v for k, v in updates.items() if k in TRACKED_COL_FIELDS}
+
+        # Capture old values for diff
+        old_values = {k: getattr(db_col, k, None) for k in metadata_updates}
+
         for key, value in updates.items():
             if hasattr(db_col, key):
                 setattr(db_col, key, value)
-                
+
         db_col.updated_at = datetime.utcnow()
         self.db.flush()
-        
-        # Trigger Asset version update (when column metadata changes, it changes the asset)
-        asset_repo = AssetRepository(self.db)
-        asset_repo.update(db_col.asset_id, {"updated_at": datetime.utcnow()}, commit=False)
-        
-        # Log Activity
-        self.log_activity(db_col.asset.workspace_id, "column_updated", f"Updated column metadata for '{db_col.asset.name}.{db_col.name}'", db_col.asset_id, commit=False)
-        
+
+        # Build diff details for column
+        if metadata_updates:
+            detail_parts = []
+            for field, old_val in old_values.items():
+                new_val = getattr(db_col, field, None)
+                if old_val != new_val:
+                    if field == "tags":
+                        o = ", ".join(old_val) if isinstance(old_val, list) else str(old_val or "")
+                        n = ", ".join(new_val) if isinstance(new_val, list) else str(new_val or "")
+                        detail_parts.append(f"tags: [{o}] → [{n}]")
+                    elif field == "custom_attributes":
+                        # Only flag formula changes specifically
+                        old_formula = (old_val or {}).get("formula", "")
+                        new_formula = (new_val or {}).get("formula", "")
+                        if old_formula != new_formula:
+                            detail_parts.append(f"formula: \"{old_formula or '(none)'}\" → \"{new_formula or '(none)'}\")")
+                    else:
+                        o = str(old_val or "(empty)")
+                        n = str(new_val or "(empty)")
+                        detail_parts.append(f"{field}: \"{o}\" → \"{n}\"")
+
+            if detail_parts:
+                activity_detail = f"Updated column '{db_col.asset.name}.{db_col.name}': " + "; ".join(detail_parts)
+                self.log_activity(db_col.asset.workspace_id, "column_updated", activity_detail, db_col.asset_id, commit=False)
+
         if commit:
             self.db.commit()
             self.db.refresh(db_col)
-            
+
         # Broadcast via WebSockets
         self._trigger_broadcast("column_updated", {
             "workspace_id": db_col.asset.workspace_id,
@@ -495,7 +536,7 @@ class ColumnRepository(BaseRepository):
             "name": db_col.name,
             "updates": updates
         })
-        
+
         return db_col
 
     def delete(self, column_id: str, commit: bool = True) -> bool:
@@ -605,15 +646,28 @@ class RelationshipRepository(BaseRepository):
             
         self.db.add(db_rel)
         self.db.flush()
-        
-        # Log Activity
-        details = f"Created lineage edge: {source_node_type} ({source_node_id}) {relationship_type} {destination_node_type} ({destination_node_id})"
+
+        # Resolve human-readable names for activity log
+        def resolve_node_label(node_type: str, node_id: str) -> str:
+            if node_type == "asset":
+                a = self.db.query(Asset).filter(Asset.id == node_id).first()
+                return f"Table '{a.name}'" if a else f"Table [{node_id[:8]}]"
+            else:
+                col = self.db.query(ColumnModel).filter(ColumnModel.id == node_id).first()
+                if col:
+                    asset = self.db.query(Asset).filter(Asset.id == col.asset_id).first()
+                    return f"'{asset.name}.{col.name}'" if asset else f"Column '{col.name}'"
+                return f"Column [{node_id[:8]}]"
+
+        src_label = resolve_node_label(source_node_type, source_node_id)
+        dst_label = resolve_node_label(destination_node_type, destination_node_id)
+        details = f"Created {relationship_type} lineage: {src_label} → {dst_label}"
         self.log_activity(workspace_id, "relationship_created", details, None, commit=False)
-        
+
         if commit:
             self.db.commit()
             self.db.refresh(db_rel)
-            
+
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_created", {
             "workspace_id": workspace_id,
@@ -625,7 +679,7 @@ class RelationshipRepository(BaseRepository):
             "relationship_type": db_rel.relationship_type,
             "metadata_json": db_rel.metadata_json
         })
-        
+
         return db_rel
 
     def update(self, rel_id: str, updates: Dict[str, Any], commit: bool = True) -> Optional[RelationshipModel]:
@@ -662,25 +716,43 @@ class RelationshipRepository(BaseRepository):
         db_rel = self.get_by_id(rel_id)
         if not db_rel:
             return False
-            
+
         workspace_id = db_rel.workspace_id
         source_id = db_rel.source_node_id
         dest_id = db_rel.destination_node_id
+        source_type = db_rel.source_node_type
+        dest_type = db_rel.destination_node_type
         rel_type = db_rel.relationship_type
-        
+
+        # Resolve human-readable names for activity log BEFORE deletion
+        def resolve_node_label(node_type: str, node_id: str) -> str:
+            if node_type == "asset":
+                a = self.db.query(Asset).filter(Asset.id == node_id).first()
+                return f"Table '{a.name}'" if a else f"Table [{node_id[:8]}]"
+            else:
+                col = self.db.query(ColumnModel).filter(ColumnModel.id == node_id).first()
+                if col:
+                    asset = self.db.query(Asset).filter(Asset.id == col.asset_id).first()
+                    return f"'{asset.name}.{col.name}'" if asset else f"Column '{col.name}'"
+                return f"Column [{node_id[:8]}]"
+
+        src_label = resolve_node_label(source_type, source_id)
+        dst_label = resolve_node_label(dest_type, dest_id)
+
         # Clean up formula if it's a column-to-column lineage
-        if db_rel.source_node_type == "column" and db_rel.destination_node_type == "column":
+        if source_type == "column" and dest_type == "column":
             cleanup_formula_on_rel_deletion(self.db, source_id, dest_id)
-            
+
         self.db.delete(db_rel)
         self.db.flush()
-        
-        # Log Activity
-        self.log_activity(workspace_id, "relationship_deleted", f"Removed lineage edge: {source_id} -> {dest_id} ({rel_type})", None, commit=False)
-        
+
+        # Log Activity with human-readable names
+        details = f"Removed {rel_type} lineage: {src_label} → {dst_label}"
+        self.log_activity(workspace_id, "relationship_deleted", details, None, commit=False)
+
         if commit:
             self.db.commit()
-            
+
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_deleted", {
             "workspace_id": workspace_id,
@@ -688,7 +760,7 @@ class RelationshipRepository(BaseRepository):
             "source_node_id": source_id,
             "destination_node_id": dest_id
         })
-        
+
         return True
 
     def log_activity(self, workspace_id: str, activity_type: str, details: str, asset_id: Optional[str] = None, commit: bool = True):
