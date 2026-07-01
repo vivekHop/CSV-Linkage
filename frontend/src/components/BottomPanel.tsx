@@ -259,28 +259,38 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                       const dateStr = fmtIST(act.created_at);
                       
                       const getActionBadge = (type: string) => {
-                        let baseStyle = "px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ";
-                        if (type.includes('created')) {
-                          return <span className={baseStyle + "bg-brand-emerald/10 text-brand-emerald border border-brand-emerald/20"}>Created</span>;
-                        } else if (type.includes('updated')) {
-                          return <span className={baseStyle + "bg-brand-violet/10 text-brand-violet border border-brand-violet/20"}>Updated</span>;
-                        } else if (type.includes('deleted')) {
-                          return <span className={baseStyle + "bg-brand-coral/10 text-brand-coral border border-brand-coral/20"}>Deleted</span>;
-                        } else if (type.includes('logged') || type.includes('sync')) {
-                          return <span className={baseStyle + "bg-blue-900/20 text-blue-300 border border-blue-800/40"}>Synced</span>;
+                        const baseStyle = "inline-block px-2.5 py-0.5 rounded text-[9px] font-semibold uppercase tracking-wider border ";
+                        switch (type) {
+                          case 'asset_created':
+                            return <span className={baseStyle + "bg-emerald-500/10 text-emerald-400 border-emerald-500/20"}>Table Created</span>;
+                          case 'asset_updated':
+                            return <span className={baseStyle + "bg-indigo-500/10 text-indigo-400 border-indigo-500/20"}>Table Updated</span>;
+                          case 'asset_deleted':
+                            return <span className={baseStyle + "bg-rose-500/10 text-rose-400 border-rose-500/20"}>Table Deleted</span>;
+                          case 'column_updated':
+                            return <span className={baseStyle + "bg-purple-500/10 text-purple-400 border-purple-500/20"}>Column Updated</span>;
+                          case 'column_deleted':
+                            return <span className={baseStyle + "bg-rose-500/10 text-rose-400 border-rose-500/20"}>Column Deleted</span>;
+                          case 'relationship_created':
+                            return <span className={baseStyle + "bg-teal-500/10 text-teal-400 border-teal-500/20"}>Lineage Created</span>;
+                          case 'relationship_deleted':
+                            return <span className={baseStyle + "bg-rose-500/10 text-rose-400 border-rose-500/20"}>Lineage Deleted</span>;
+                          default: {
+                            const cleanLabel = type.replace(/_/g, ' ');
+                            return <span className={baseStyle + "bg-workspace-800 text-workspace-400 border-workspace-700"}>{cleanLabel}</span>;
+                          }
                         }
-                        return <span className={baseStyle + "bg-workspace-700 text-workspace-300 border border-workspace-600"}>{type}</span>;
                       };
 
                       return (
-                        <tr key={act.id} className="hover:bg-workspace-800/30 transition-colors group">
-                          <td className="py-2.5 pr-4 text-workspace-200">
+                        <tr key={act.id} className="hover:bg-workspace-800/40 border-b border-workspace-800/50 last:border-0 transition-colors group">
+                          <td className="py-3 pr-4 align-middle">
                             {getActionBadge(act.activity_type)}
                           </td>
-                          <td className="py-2.5 pr-4 text-workspace-200 font-mono text-[11px]">
+                          <td className="py-3 pr-4 text-workspace-100 text-[12px] align-middle break-words">
                             {makeDetailsHumanReadable(act.details)}
                           </td>
-                          <td className="py-2.5 text-right text-workspace-600 font-mono text-[10px]">
+                          <td className="py-3 text-right text-workspace-400 text-[11px] align-middle whitespace-nowrap font-mono">
                             {dateStr}
                           </td>
                         </tr>

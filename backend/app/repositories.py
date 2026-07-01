@@ -358,11 +358,6 @@ class AssetRepository(BaseRepository):
                     change_summary=change_summary,
                     metadata_snapshot={
                         "version": db_asset.version,
-                        "name": db_asset.name,
-                        "owner": db_asset.owner,
-                        "description": db_asset.description,
-                        "notes": db_asset.notes,
-                        "tags": db_asset.tags,
                         "is_diff": True,
                         "changes": diff_changes
                     }

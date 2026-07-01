@@ -943,12 +943,12 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                     selectedVersionSnapshot.changes.map((change: any, cIdx: number) => (
                       <div key={cIdx} className="border-b border-workspace-750/30 pb-2 last:border-b-0">
                         <span className="text-brand-teal block font-semibold">{change.field}</span>
-                        <div className="flex items-center space-x-2 mt-1 text-[9px]">
-                          <span className="text-red-400 line-through bg-red-950/20 px-1.5 py-0.5 rounded max-w-[120px] truncate" title={change.old}>
+                        <div className="flex flex-wrap items-center gap-1.5 mt-1 text-[9px]">
+                          <span className="text-red-400 line-through bg-red-950/20 px-1.5 py-0.5 rounded break-all whitespace-normal" title={change.old}>
                             {change.old || '(empty)'}
                           </span>
                           <span className="text-workspace-500 font-bold">&rarr;</span>
-                          <span className="text-green-400 bg-green-950/20 px-1.5 py-0.5 rounded max-w-[120px] truncate" title={change.new}>
+                          <span className="text-green-400 bg-green-950/20 px-1.5 py-0.5 rounded break-all whitespace-normal" title={change.new}>
                             {change.new || '(empty)'}
                           </span>
                         </div>

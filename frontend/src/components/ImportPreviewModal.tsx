@@ -54,6 +54,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   const [newColType, setNewColType] = useState('STRING');
   const [isDirty, setIsDirty] = useState(false);
   const [existingColumns, setExistingColumns] = useState<any[]>([]);
+  const [showAllLineages, setShowAllLineages] = useState(false);
   
   // Draft management
   const [drafts, setDrafts] = useState<ImportDraft[]>([]);
@@ -283,9 +284,23 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
     return true;
   };
 
-  // Dynamically filter relationships based on enabled assets/columns
+  // Check if a node ID belongs to the currently selected asset (either the asset itself or one of its columns)
+  const isNodeOfSelectedAsset = (id: string): boolean => {
+    if (!currentAsset) return false;
+    if (currentAsset.temp_id === id) return true;
+    return (currentAsset.columns || []).some((c: any) => c.temp_id === id);
+  };
+
+  // Dynamically filter relationships based on enabled assets/columns and selected asset filter
   const visibleRelationships = relationships.filter(rel => {
-    return isNodeEnabled(rel.source_node_id) && isNodeEnabled(rel.destination_node_id);
+    const enabled = isNodeEnabled(rel.source_node_id) && isNodeEnabled(rel.destination_node_id);
+    if (!enabled) return false;
+    
+    // If "Show All" is selected, don't filter by selected asset
+    if (showAllLineages) return true;
+    
+    // Otherwise, it must involve the selected asset (source or destination)
+    return isNodeOfSelectedAsset(rel.source_node_id) || isNodeOfSelectedAsset(rel.destination_node_id);
   });
 
   // Toggle proposed relationship selection
@@ -517,7 +532,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
           )}
 
           {/* Left Column: Tables / Sheets list */}
-          <div className="w-80 min-w-[280px] max-w-[320px] shrink-0 border-r border-workspace-800 bg-workspace-950/20 flex flex-col min-h-0">
+          <div className="w-[300px] shrink-0 border-r border-workspace-800 bg-workspace-950/20 flex flex-col min-h-0">
             <div className="p-4 border-b border-workspace-800 bg-workspace-950/30">
               <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Tables (Sheets)</span>
             </div>
@@ -574,7 +589,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
           </div>
 
           {/* Middle Column: Columns editor */}
-          <div className="flex-1 min-w-[350px] max-w-[500px] shrink-0 flex flex-col border-r border-workspace-800 bg-workspace-900/30 min-h-0">
+          <div className="w-[450px] shrink-0 flex flex-col border-r border-workspace-800 bg-workspace-900/30 min-h-0">
             <div className="p-4 border-b border-workspace-800 bg-workspace-950/30 flex items-center justify-between">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Columns Editor</span>
@@ -664,10 +679,20 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
               </div>
             )}
           </div>
+
           {/* Right Column: Proposed Lineages */}
-          <div className="w-96 min-w-[320px] max-w-[450px] shrink-0 bg-workspace-950/10 flex flex-col min-h-0">
-            <div className="p-4 border-b border-workspace-800 bg-workspace-950/30">
+          <div className="w-[490px] shrink-0 bg-workspace-950/10 flex flex-col min-h-0">
+            <div className="p-4 border-b border-workspace-800 bg-workspace-950/30 flex items-center justify-between">
               <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Proposed Lineage Links</span>
+              <label className="flex items-center space-x-1.5 text-xs text-workspace-400 hover:text-white cursor-pointer select-none">
+                <input 
+                  type="checkbox"
+                  checked={showAllLineages}
+                  onChange={(e) => setShowAllLineages(e.target.checked)}
+                  className="rounded border-workspace-700 bg-workspace-800 text-indigo-500 focus:ring-0 cursor-pointer"
+                />
+                <span>Show All</span>
+              </label>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 space-y-3">
@@ -697,11 +722,11 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                           className="mt-0.5 rounded border-workspace-700 bg-workspace-800 text-indigo-500 focus:ring-0 cursor-pointer"
                         />
                         <div className="flex-1 min-w-0">
-                          <div className="flex items-center space-x-1.5 text-xs text-workspace-300">
+                          <div className="flex flex-wrap items-center gap-1.5 text-xs text-workspace-300">
                             <span className="font-semibold text-white break-all" title={getColNameById(rel.source_node_id)}>
                               {getColNameById(rel.source_node_id)}
                             </span>
-                            <ArrowRight size={12} className="text-workspace-505 shrink-0" />
+                            <ArrowRight size={12} className="text-workspace-500 shrink-0" />
                             <span className="font-semibold text-white break-all" title={getColNameById(rel.destination_node_id)}>
                               {getColNameById(rel.destination_node_id)}
                             </span>
@@ -723,7 +748,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                           </div>
 
                           {isFormula && rel.metadata_json?.formula && (
-                            <div className="text-[10px] font-mono text-green-400 bg-green-500/5 px-2 py-1 rounded border border-green-500/10 mt-2 truncate">
+                            <div className="text-[10px] font-mono text-green-400 bg-green-500/5 px-2 py-1 rounded border border-green-500/10 mt-2 break-all whitespace-normal">
                               {rel.metadata_json.formula}
                             </div>
                           )}
