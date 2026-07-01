@@ -15,6 +15,7 @@ import type { Asset, Column, Relationship, ActivityLog, Workspace } from './type
 import { CSVNode } from './components/CSVNode';
 import { LeftSidebar } from './components/LeftSidebar';
 import { ImportPreviewModal } from './components/ImportPreviewModal';
+import { useCustomDialog } from './components/CustomDialog';
 import { RightSidebar } from './components/RightSidebar';
 import { BottomPanel } from './components/BottomPanel';
 import { LineageEdge } from './components/LineageEdge';
@@ -244,6 +245,7 @@ const removeTableReferencesFromFormula = (formula: string, tableName: string): s
 };
 
 export default function App() {
+  const dialog = useCustomDialog();
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<string>(() => {
     const saved = localStorage.getItem('activeWorkspaceId');
@@ -964,7 +966,7 @@ export default function App() {
     if (!reactFlowInstance.current) return;
     const selectedNodes = reactFlowInstance.current.getNodes().filter((n: any) => n.selected && n.type !== 'groupNode');
     if (selectedNodes.length < 1) {
-      alert("Please select at least 1 table to form a group.");
+      await dialog.alert("Group Selection", "Please select at least 1 table to form a group.", "warning");
       return;
     }
 
@@ -1738,7 +1740,8 @@ export default function App() {
       ? `Are you sure you want to dissolve the group '${asset.name}'?`
       : `Are you sure you want to delete the metadata for '${asset.name}'? All associated lineage connections will be removed.`;
 
-    if (confirm(message)) {
+    const confirmed = await dialog.confirm(isGroup ? 'Dissolve Group' : 'Delete Table', message, 'danger');
+    if (confirmed) {
       saveUndoState();
       const originalAssets = assets;
       const originalRels = relationships;
@@ -1800,7 +1803,8 @@ export default function App() {
     }
     const displayName = assetName ? `${assetName}.${colName}` : colName;
 
-    if (confirm(`Are you sure you want to delete column '${displayName}'? All associated lineage connections will be removed.`)) {
+    const confirmed = await dialog.confirm('Delete Column', `Are you sure you want to delete column '${displayName}'? All associated lineage connections will be removed.`, 'danger');
+    if (confirmed) {
       saveUndoState();
       const originalAssets = assets;
       const originalRels = relationships;
@@ -1882,7 +1886,7 @@ export default function App() {
     } catch (err) {
       // Revert on failure
       setAssets(originalAssets);
-      alert('Failed to save table modifications.');
+      await dialog.alert('Error', 'Failed to save table modifications.', 'danger');
     }
   };
 
@@ -2032,7 +2036,7 @@ export default function App() {
       // Revert on failure
       setAssets(originalAssets);
       setRelationships(originalRels);
-      alert('Failed to save column annotations.');
+      await dialog.alert('Error', 'Failed to save column annotations.', 'danger');
     }
   };
 
@@ -2083,7 +2087,7 @@ export default function App() {
     } catch (err: any) {
       // Revert on failure
       setRelationships((prev) => prev.filter((r) => r.id !== tempId));
-      alert(err.message || 'Failed to create lineage connection.');
+      await dialog.alert('Connection Error', err.message || 'Failed to create lineage connection.', 'danger');
     }
   }, [assets, relationships]);
 

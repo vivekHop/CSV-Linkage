@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { api } from '../api';
 import type { ImportDraft } from '../types';
+import { useCustomDialog } from './CustomDialog';
 
 interface ImportPreviewModalProps {
   isOpen: boolean;
@@ -26,6 +27,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   files,
   showToast
 }) => {
+  const dialog = useCustomDialog();
   const [assets, setAssets] = useState<any[]>([]);
   const [relationships, setRelationships] = useState<any[]>([]);
   const [selectedAssetIdx, setSelectedAssetIdx] = useState<number>(0);
@@ -320,7 +322,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
       if (showToast) {
         showToast('Import draft saved successfully!', 'success');
       } else {
-        alert('Draft saved successfully!');
+        await dialog.alert('Success', 'Draft saved successfully!', 'success');
       }
       onClose(true); // Close the modal
     } catch (err: any) {
@@ -346,7 +348,8 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
   // Delete Draft
   const handleDeleteDraft = async (draftId: string, e: React.MouseEvent) => {
     e.stopPropagation();
-    if (!confirm('Are you sure you want to delete this draft?')) return;
+    const confirmed = await dialog.confirm('Delete Draft', 'Are you sure you want to delete this draft?', 'danger');
+    if (!confirmed) return;
     if (showToast) showToast('Deleting draft...', 'info');
     try {
       await api.deleteDraft(draftId);
@@ -356,7 +359,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
       if (showToast) {
         showToast('Failed to delete draft: ' + err.message, 'error');
       } else {
-        alert('Failed to delete draft: ' + err.message);
+        await dialog.alert('Error', 'Failed to delete draft: ' + err.message, 'danger');
       }
     }
   };
@@ -450,7 +453,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
         </div>
 
         {/* Content Layout */}
-        <div className="flex-1 flex overflow-hidden min-h-0">
+        <div className="flex-1 flex overflow-x-auto overflow-y-hidden min-h-0">
           
           {/* List of Drafts Overlay Panel */}
           {showDraftsList && (
@@ -495,7 +498,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
           )}
 
           {/* Left Column: Tables / Sheets list */}
-          <div className="w-1/4 border-r border-workspace-800 bg-workspace-950/20 flex flex-col min-h-0">
+          <div className="w-80 min-w-[280px] max-w-[320px] shrink-0 border-r border-workspace-800 bg-workspace-950/20 flex flex-col min-h-0">
             <div className="p-4 border-b border-workspace-800 bg-workspace-950/30">
               <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Tables (Sheets)</span>
             </div>
@@ -552,7 +555,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
           </div>
 
           {/* Middle Column: Columns editor */}
-          <div className="flex-1 flex flex-col border-r border-workspace-800 bg-workspace-900/30 min-h-0">
+          <div className="flex-1 min-w-[350px] max-w-[500px] shrink-0 flex flex-col border-r border-workspace-800 bg-workspace-900/30 min-h-0">
             <div className="p-4 border-b border-workspace-800 bg-workspace-950/30 flex items-center justify-between">
               <div>
                 <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Columns Editor</span>
@@ -642,9 +645,8 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
               </div>
             )}
           </div>
-
           {/* Right Column: Proposed Lineages */}
-          <div className="w-1/3 bg-workspace-950/10 flex flex-col min-h-0">
+          <div className="w-96 min-w-[320px] max-w-[450px] shrink-0 bg-workspace-950/10 flex flex-col min-h-0">
             <div className="p-4 border-b border-workspace-800 bg-workspace-950/30">
               <span className="text-[10px] font-bold uppercase tracking-wider text-workspace-400">Proposed Lineage Links</span>
             </div>
@@ -653,7 +655,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
               {visibleRelationships.length === 0 ? (
                 <div className="h-full flex flex-col items-center justify-center text-center p-4">
                   <Sparkles size={24} className="text-workspace-600 mb-2" />
-                  <p className="text-xs text-workspace-500">No formula derivations or high-similarity column matches found for selected columns.</p>
+                  <p className="text-xs text-workspace-50">No formula derivations or high-similarity column matches found for selected columns.</p>
                 </div>
               ) : (
                 visibleRelationships.map((rel, relIdx) => {
@@ -677,11 +679,11 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                         />
                         <div className="flex-1 min-w-0">
                           <div className="flex items-center space-x-1.5 text-xs text-workspace-300">
-                            <span className="font-semibold text-white truncate max-w-[120px]" title={getColNameById(rel.source_node_id)}>
+                            <span className="font-semibold text-white break-all" title={getColNameById(rel.source_node_id)}>
                               {getColNameById(rel.source_node_id)}
                             </span>
-                            <ArrowRight size={12} className="text-workspace-500 shrink-0" />
-                            <span className="font-semibold text-white truncate max-w-[120px]" title={getColNameById(rel.destination_node_id)}>
+                            <ArrowRight size={12} className="text-workspace-505 shrink-0" />
+                            <span className="font-semibold text-white break-all" title={getColNameById(rel.destination_node_id)}>
                               {getColNameById(rel.destination_node_id)}
                             </span>
                           </div>

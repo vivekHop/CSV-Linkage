@@ -5,6 +5,8 @@ from app.database import get_db
 from app.schemas import ActivityLogResponse
 from app.repositories import ActivityLogRepository
 
+from app.routers.assets import resolve_workspace_id
+
 router = APIRouter(prefix="/activities", tags=["Activities"])
 
 @router.get("", response_model=List[ActivityLogResponse])
@@ -16,4 +18,5 @@ def get_recent_activities(
     """
     Retrieves a list of recent user activities on the workspace (e.g. uploads, edits, lineage creations).
     """
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     return ActivityLogRepository(db).get_recent(x_workspace_id, limit)

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FileSpreadsheet, Columns, User, Calendar, Plus, Trash2, Eye, Tag, FileClock, CheckCircle, Database, Loader2, AlertCircle } from 'lucide-react';
 import { api } from '../api';
 import type { Asset, Column, VersionHistory, Relationship } from '../types';
+import { useCustomDialog } from './CustomDialog';
 
 interface RightSidebarProps {
   selectedAsset: Asset | null;
@@ -259,6 +260,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
   onDeleteRelationship,
   showToast,
 }) => {
+  const dialog = useCustomDialog();
   const [activeTab, setActiveTab] = useState<'metadata' | 'versions'>('metadata');
   
   // Asset state
@@ -641,8 +643,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               </div>
               {onDeleteRelationship && (
                 <button
-                  onClick={() => {
-                    if (confirm('Are you sure you want to delete this lineage connection?')) {
+                  onClick={async () => {
+                    const confirmed = await dialog.confirm('Delete Link', 'Are you sure you want to delete this lineage connection?', 'danger');
+                    if (confirmed) {
                       onDeleteRelationship(rel.id);
                     }
                   }}
@@ -879,7 +882,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h4 className="text-[10px] font-bold text-brand-teal uppercase tracking-wider">
-                Viewing Version v{selectedVersionSnapshot.version} Snapshot
+                Viewing Version v{selectedVersionSnapshot.version} {selectedVersionSnapshot.is_diff ? 'Changes' : 'Snapshot'}
               </h4>
               <button
                 onClick={() => setSelectedVersionSnapshot(null)}
@@ -889,36 +892,62 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
               </button>
             </div>
             
-            <div className="bg-workspace-900 border border-workspace-750 rounded-lg p-3 space-y-3 font-mono text-[10px]">
-              <div>
-                <span className="text-workspace-600 block">Name</span>
-                <span className="text-workspace-200">{selectedVersionSnapshot.name}</span>
-              </div>
-              <div>
-                <span className="text-workspace-600 block">Owner</span>
-                <span className="text-workspace-200">{selectedVersionSnapshot.owner || 'N/A'}</span>
-              </div>
-              <div>
-                <span className="text-workspace-600 block">Description</span>
-                <span className="text-workspace-200 block whitespace-pre-wrap">{selectedVersionSnapshot.description || 'N/A'}</span>
-              </div>
-              <div>
-                <span className="text-workspace-600 block">Business Notes</span>
-                <span className="text-workspace-200 block whitespace-pre-wrap">{selectedVersionSnapshot.notes || 'N/A'}</span>
-              </div>
-              <div>
-                <span className="text-workspace-600 block">Tags</span>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {selectedVersionSnapshot.tags?.map((t: string) => (
-                    <span key={t} className="px-1.5 py-0.5 bg-workspace-800 text-workspace-400 rounded text-[9px]">
-                      {t}
-                    </span>
-                  )) || 'None'}
+            {selectedVersionSnapshot.is_diff ? (
+              <div className="bg-workspace-900 border border-workspace-750 rounded-lg p-3 space-y-3 font-mono text-[10px]">
+                <span className="text-[10px] font-bold text-workspace-400 block mb-1">Changed Properties:</span>
+                <div className="space-y-2">
+                  {selectedVersionSnapshot.changes && selectedVersionSnapshot.changes.length > 0 ? (
+                    selectedVersionSnapshot.changes.map((change: any, cIdx: number) => (
+                      <div key={cIdx} className="border-b border-workspace-750/30 pb-2 last:border-b-0">
+                        <span className="text-brand-teal block font-semibold">{change.field}</span>
+                        <div className="flex items-center space-x-2 mt-1 text-[9px]">
+                          <span className="text-red-400 line-through bg-red-950/20 px-1.5 py-0.5 rounded max-w-[120px] truncate" title={change.old}>
+                            {change.old || '(empty)'}
+                          </span>
+                          <span className="text-workspace-500 font-bold">&rarr;</span>
+                          <span className="text-green-400 bg-green-950/20 px-1.5 py-0.5 rounded max-w-[120px] truncate" title={change.new}>
+                            {change.new || '(empty)'}
+                          </span>
+                        </div>
+                      </div>
+                    ))
+                  ) : (
+                    <span className="text-workspace-500">No changes detected</span>
+                  )}
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="bg-workspace-900 border border-workspace-750 rounded-lg p-3 space-y-3 font-mono text-[10px]">
+                <div>
+                  <span className="text-workspace-600 block">Name</span>
+                  <span className="text-workspace-200">{selectedVersionSnapshot.name}</span>
+                </div>
+                <div>
+                  <span className="text-workspace-600 block">Owner</span>
+                  <span className="text-workspace-200">{selectedVersionSnapshot.owner || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-workspace-600 block">Description</span>
+                  <span className="text-workspace-200 block whitespace-pre-wrap">{selectedVersionSnapshot.description || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-workspace-600 block">Business Notes</span>
+                  <span className="text-workspace-200 block whitespace-pre-wrap">{selectedVersionSnapshot.notes || 'N/A'}</span>
+                </div>
+                <div>
+                  <span className="text-workspace-600 block">Tags</span>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {selectedVersionSnapshot.tags?.map((t: string) => (
+                      <span key={t} className="px-1.5 py-0.5 bg-workspace-800 text-workspace-400 rounded text-[9px]">
+                        {t}
+                      </span>
+                    )) || 'None'}
+                  </div>
+                </div>
+              </div>
+            )}
             <p className="text-[9px] text-workspace-600 italic text-center">
-              Snapshots represent historical metadata dumps. They are read-only.
+              {selectedVersionSnapshot.is_diff ? 'Diff represents only what changed in this version.' : 'Snapshots represent historical metadata dumps. They are read-only.'}
             </p>
           </div>
         ) : (

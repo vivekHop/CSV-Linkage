@@ -220,40 +220,55 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                 <span className="text-xs text-workspace-600 font-mono">No recent workspace activities</span>
               </div>
             ) : (
-              <div className="space-y-2">
-                {activities.map((act) => {
-                  const dateStr = new Date(act.created_at).toLocaleTimeString([], {
-                    hour: '2-digit',
-                    minute: '2-digit',
-                    second: '2-digit',
-                  });
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead>
+                    <tr className="border-b border-workspace-750 text-[10px] text-workspace-600 uppercase font-bold tracking-wider font-mono">
+                      <th className="pb-2">Action Type</th>
+                      <th className="pb-2">Description</th>
+                      <th className="pb-2 text-right">Timestamp</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-workspace-750/30">
+                    {activities.map((act) => {
+                      const dateStr = new Date(act.created_at).toLocaleString([], {
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                      });
+                      
+                      const getActionBadge = (type: string) => {
+                        let baseStyle = "px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ";
+                        if (type.includes('created')) {
+                          return <span className={baseStyle + "bg-brand-emerald/10 text-brand-emerald border border-brand-emerald/20"}>Created</span>;
+                        } else if (type.includes('updated')) {
+                          return <span className={baseStyle + "bg-brand-violet/10 text-brand-violet border border-brand-violet/20"}>Updated</span>;
+                        } else if (type.includes('deleted')) {
+                          return <span className={baseStyle + "bg-brand-coral/10 text-brand-coral border border-brand-coral/20"}>Deleted</span>;
+                        } else if (type.includes('logged') || type.includes('sync')) {
+                          return <span className={baseStyle + "bg-blue-900/20 text-blue-300 border border-blue-800/40"}>Synced</span>;
+                        }
+                        return <span className={baseStyle + "bg-workspace-700 text-workspace-300 border border-workspace-600"}>{type}</span>;
+                      };
 
-                  let icon = <Clock size={13} className="text-workspace-500" />;
-                  if (act.activity_type.includes('created')) {
-                    icon = <PlusCircle size={13} className="text-brand-teal" />;
-                  } else if (act.activity_type.includes('updated')) {
-                    icon = <RefreshCw size={13} className="text-brand-violet animate-spin-slow" />;
-                  } else if (act.activity_type.includes('deleted')) {
-                    icon = <AlertCircle size={13} className="text-brand-coral" />;
-                  }
-
-                  return (
-                    <div
-                      key={act.id}
-                      className="flex items-start justify-between bg-workspace-900 border border-workspace-750/30 p-2.5 rounded-lg text-xs hover:border-workspace-700 transition"
-                    >
-                      <div className="flex items-center space-x-2.5 min-w-0">
-                        <div className="shrink-0">{icon}</div>
-                        <p className="text-workspace-200 truncate pr-4 font-medium" title={act.details}>
-                          {makeDetailsHumanReadable(act.details)}
-                        </p>
-                      </div>
-                      <div className="flex items-center space-x-1.5 shrink-0 text-workspace-600 font-mono text-[10px]">
-                        <span>{dateStr}</span>
-                      </div>
-                    </div>
-                  );
-                })}
+                      return (
+                        <tr key={act.id} className="hover:bg-workspace-800/30 transition-colors group">
+                          <td className="py-2.5 pr-4 text-workspace-200">
+                            {getActionBadge(act.activity_type)}
+                          </td>
+                          <td className="py-2.5 pr-4 text-workspace-200 font-mono text-[11px]">
+                            {makeDetailsHumanReadable(act.details)}
+                          </td>
+                          <td className="py-2.5 text-right text-workspace-600 font-mono text-[10px]">
+                            {dateStr}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>

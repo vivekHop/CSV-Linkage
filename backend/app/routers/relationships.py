@@ -7,6 +7,8 @@ from app.repositories import RelationshipRepository
 
 from app.websockets import manager
 
+from app.routers.assets import resolve_workspace_id
+
 router = APIRouter(prefix="/relationships", tags=["Relationships"])
 
 @router.post("", response_model=RelationshipResponse, status_code=status.HTTP_201_CREATED)
@@ -35,6 +37,7 @@ async def create_relationship(
             detail="Invalid relationship_type. Supported: 'DERIVES_FROM', 'MAPS_TO', 'LOOKUP_FROM', 'COPIED_FROM'"
         )
 
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     rel_repo = RelationshipRepository(db)
     created_rel = rel_repo.create(
         workspace_id=x_workspace_id,
@@ -59,6 +62,7 @@ def list_relationships(
     """
     Retrieves all lineage relationships.
     """
+    x_workspace_id = resolve_workspace_id(x_workspace_id, db)
     return RelationshipRepository(db).get_all(x_workspace_id)
 
 @router.put("/{rel_id}", response_model=RelationshipResponse)

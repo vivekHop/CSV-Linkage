@@ -86,28 +86,36 @@ async def upload_spreadsheet_files(
                     owner=asset_data["owner"],
                     notes=asset_data["notes"],
                     tags=asset_data["tags"],
-                    custom_attributes=asset_data["custom_attributes"]
+                    custom_attributes=asset_data["custom_attributes"],
+                    commit=False
                 )
                 
                 # Save Columns
                 for col_data in columns_data:
-                    column_repo.create(asset.id, col_data)
+                    column_repo.create(asset.id, col_data, commit=False)
                     
-                # Fetch complete asset with columns populated
-                db_asset = asset_repo.get_by_id(asset.id)
-                created_assets.append(db_asset)
+                created_assets.append(asset)
             
         except Exception as e:
+            db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail=f"Failed to profile and import '{file.filename}': {str(e)}"
             )
             
-    # Broadcast upload events
+    db.commit()
+    
+    # Refresh to ensure relationships and IDs are correct
+    refreshed_assets = []
     for asset in created_assets:
+        db.refresh(asset)
+        refreshed_assets.append(asset)
+        
+    # Broadcast upload events
+    for asset in refreshed_assets:
         await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id, "workspace_id": x_workspace_id}})
-
-    return created_assets
+ 
+    return refreshed_assets
 
 @router.post("", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
 async def create_asset(
@@ -134,7 +142,8 @@ async def create_asset(
         owner=asset.owner or "",
         notes=asset.notes or "",
         tags=asset.tags or [],
-        custom_attributes=asset.custom_attributes or {}
+        custom_attributes=asset.custom_attributes or {},
+        commit=False
     )
     
     for col in asset.columns:
@@ -153,8 +162,9 @@ async def create_asset(
             "notes": col.notes or "",
             "tags": col.tags or [],
             "custom_attributes": col.custom_attributes or {}
-        })
+        }, commit=False)
         
+    db.commit()
     db_asset = asset_repo.get_by_id(created_asset.id)
     await manager.broadcast({"event_type": "asset_created", "data": {"id": db_asset.id, "workspace_id": x_workspace_id}})
     return db_asset
@@ -845,7 +855,7 @@ async def sync_workspace(
                 updated_at=datetime.utcnow()
             )
             db.add(db_asset)
-            db.commit() # commit so columns are referenceable
+            db.flush() # flush so columns can reference asset ID if needed
 
             for c in a.columns:
                 db_col = ColumnModel(
@@ -869,7 +879,7 @@ async def sync_workspace(
                     updated_at=datetime.utcnow()
                 )
                 db.add(db_col)
-            db.commit()
+            db.flush()
 
         # Insert relationships
         for r in payload.relationships:
