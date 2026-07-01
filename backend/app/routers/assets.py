@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Header, status
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
 from datetime import datetime
@@ -6,7 +6,7 @@ import uuid
 import re
 from app.database import get_db
 from app.schemas import AssetResponse, AssetUpdate, VersionHistoryResponse, AssetCreate, WorkspaceSync, ImportDraftCreate, ImportDraftResponse
-from app.models import Asset, ColumnModel, RelationshipModel, VersionHistory, ActivityLog
+from app.models import Asset, ColumnModel, RelationshipModel, VersionHistory, ActivityLog, ImportDraft
 from app.repositories import AssetRepository, ColumnRepository, RelationshipRepository, ImportDraftRepository, create_asset_snapshot
 from app.profiler import profile_file
 
@@ -15,7 +15,11 @@ from app.websockets import manager
 router = APIRouter(prefix="/assets", tags=["Assets"])
 
 @router.post("/upload", response_model=List[AssetResponse], status_code=status.HTTP_201_CREATED)
-async def upload_spreadsheet_files(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
+async def upload_spreadsheet_files(
+    files: List[UploadFile] = File(...),
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Uploads and profiles one or more spreadsheets (CSV, Excel, TSV, ODS).
     If a file contains multiple sheets (like Excel), profiles and creates a separate table for each sheet.
@@ -44,6 +48,7 @@ async def upload_spreadsheet_files(files: List[UploadFile] = File(...), db: Sess
             for asset_data, columns_data in profiled_sheets:
                 # Save Asset
                 asset = asset_repo.create(
+                    workspace_id=x_workspace_id,
                     name=asset_data["name"],
                     asset_type=asset_data["asset_type"],
                     row_count=asset_data["row_count"],
@@ -72,12 +77,16 @@ async def upload_spreadsheet_files(files: List[UploadFile] = File(...), db: Sess
             
     # Broadcast upload events
     for asset in created_assets:
-        await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id}})
+        await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id, "workspace_id": x_workspace_id}})
 
     return created_assets
 
 @router.post("", response_model=AssetResponse, status_code=status.HTTP_201_CREATED)
-async def create_asset(asset: AssetCreate, db: Session = Depends(get_db)):
+async def create_asset(
+    asset: AssetCreate,
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Creates a new asset and its columns directly from a metadata payload.
     Used for canvas duplicating, copy-pasting, and grouping.
@@ -86,6 +95,7 @@ async def create_asset(asset: AssetCreate, db: Session = Depends(get_db)):
     column_repo = ColumnRepository(db)
     
     created_asset = asset_repo.create(
+        workspace_id=x_workspace_id,
         name=asset.name,
         asset_type=asset.asset_type,
         row_count=asset.row_count,
@@ -117,15 +127,18 @@ async def create_asset(asset: AssetCreate, db: Session = Depends(get_db)):
         })
         
     db_asset = asset_repo.get_by_id(created_asset.id)
-    await manager.broadcast({"event_type": "asset_created", "data": {"id": db_asset.id}})
+    await manager.broadcast({"event_type": "asset_created", "data": {"id": db_asset.id, "workspace_id": x_workspace_id}})
     return db_asset
 
 @router.get("", response_model=List[AssetResponse])
-def list_assets(db: Session = Depends(get_db)):
+def list_assets(
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Retrieves all metadata assets (CSV files).
     """
-    return AssetRepository(db).get_all()
+    return AssetRepository(db).get_all(x_workspace_id)
 
 
 def col_letter_to_index(col_letter: str) -> int:
@@ -137,14 +150,18 @@ def col_letter_to_index(col_letter: str) -> int:
 
 
 @router.post("/profile-preview")
-async def profile_preview(files: List[UploadFile] = File(...), db: Session = Depends(get_db)):
+async def profile_preview(
+    files: List[UploadFile] = File(...),
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     import re
     import uuid
     import io
     from openpyxl import load_workbook
     
     # 1. Fetch all existing columns in the database for fuzzy matching
-    existing_cols = db.query(ColumnModel).all()
+    existing_cols = db.query(ColumnModel).join(Asset).filter(Asset.workspace_id == x_workspace_id).all()
     
     # Check similarity function (using rapidfuzz if possible, fallback to difflib)
     try:
@@ -235,13 +252,24 @@ async def profile_preview(files: List[UploadFile] = File(...), db: Session = Dep
                             ref_sheet = sheet_q or sheet_n or sheet_name
                             c_idx = col_letter_to_index(col_let)
                             
+                            book_name = file_name
+                            book_name_no_ext = re.sub(r'\.(xlsx|xls|ods|csv|tsv)$', '', book_name, flags=re.IGNORECASE)
+                            
                             if ref_sheet == sheet_name:
                                 if 1 <= c_idx <= len(headers):
-                                    return f"[{sheet_name}][{headers[c_idx - 1]}]"
+                                    return f"[{book_name_no_ext}.{sheet_name}][{headers[c_idx - 1]}]"
                             else:
                                 other_headers = all_sheets_headers.get(ref_sheet)
                                 if other_headers and 1 <= c_idx <= len(other_headers):
-                                    return f"[{ref_sheet}][{other_headers[c_idx - 1]}]"
+                                    bracket_match = re.match(r"^(.+?)\s*\[([^\]]+)\]$", ref_sheet)
+                                    if bracket_match:
+                                        b_name = bracket_match.group(1).strip()
+                                        s_name = bracket_match.group(2).strip()
+                                        b_name_no_ext = re.sub(r'\.(xlsx|xls|ods|csv|tsv)$', '', b_name, flags=re.IGNORECASE)
+                                        full_ref_name = f"{b_name_no_ext}.{s_name}"
+                                    else:
+                                        full_ref_name = f"{book_name_no_ext}.{ref_sheet}"
+                                    return f"[{full_ref_name}][{other_headers[c_idx - 1]}]"
                             return match.group(0)
                             
                         pattern = r"(?:(?:'([^']+)'|([A-Za-z0-9_]+))!)?([A-Za-z]+)([0-9]+)"
@@ -354,7 +382,11 @@ async def profile_preview(files: List[UploadFile] = File(...), db: Session = Dep
 
 
 @router.post("/finalize-import")
-async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)):
+async def finalize_import(
+    payload: Dict[str, Any],
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     # We will map temp_id -> actual_db_uuid
     id_map = {}
     created_assets = []
@@ -373,6 +405,7 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
                 
             db_asset = Asset(
                 id=asset_uuid,
+                workspace_id=x_workspace_id,
                 name=asset_data["name"],
                 asset_type=asset_data.get("asset_type", "excel"),
                 row_count=asset_data.get("row_count"),
@@ -431,6 +464,7 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
             # Log Activity
             activity = ActivityLog(
                 id=str(uuid.uuid4()),
+                workspace_id=x_workspace_id,
                 activity_type="asset_created",
                 details=f"Uploaded CSV asset '{db_asset.name}' with {len(db_cols)} columns.",
                 asset_id=asset_uuid
@@ -449,6 +483,7 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
             
             db_rel = RelationshipModel(
                 id=str(uuid.uuid4()),
+                workspace_id=x_workspace_id,
                 source_node_type=rel_data["source_node_type"],
                 source_node_id=source_id,
                 destination_node_type=rel_data["destination_node_type"],
@@ -463,10 +498,10 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
         
         # Broadcast all asset creations
         for asset in created_assets:
-            await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id}})
+            await manager.broadcast({"event_type": "asset_created", "data": {"id": asset.id, "workspace_id": x_workspace_id}})
             
         # Broadcast relationship sync
-        await manager.broadcast({"event_type": "workspace_synced", "data": {}})
+        await manager.broadcast({"event_type": "workspace_synced", "data": {"workspace_id": x_workspace_id}})
         
         return {"status": "success", "message": f"Successfully finalized import of {len(created_assets)} sheets."}
         
@@ -479,13 +514,20 @@ async def finalize_import(payload: Dict[str, Any], db: Session = Depends(get_db)
 
 
 @router.get("/drafts", response_model=List[ImportDraftResponse])
-def list_drafts(db: Session = Depends(get_db)):
-    return ImportDraftRepository(db).get_all()
+def list_drafts(
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
+    return ImportDraftRepository(db).get_all(x_workspace_id)
 
 
 @router.post("/drafts", response_model=ImportDraftResponse)
-def save_draft(payload: ImportDraftCreate, db: Session = Depends(get_db)):
-    return ImportDraftRepository(db).create(name=payload.name, draft_json=payload.draft_json)
+def save_draft(
+    payload: ImportDraftCreate,
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
+    return ImportDraftRepository(db).create(workspace_id=x_workspace_id, name=payload.name, draft_json=payload.draft_json)
 
 
 @router.delete("/drafts/{draft_id}")
@@ -530,7 +572,7 @@ async def update_asset(asset_id: str, asset_update: AssetUpdate, db: Session = D
         )
     
     # Broadcast asset update event
-    await manager.broadcast({"event_type": "asset_updated", "data": {"id": asset_id}})
+    await manager.broadcast({"event_type": "asset_updated", "data": {"id": asset_id, "workspace_id": updated_asset.workspace_id, "updates": updates}})
     
     return updated_asset
 
@@ -539,7 +581,15 @@ async def delete_asset(asset_id: str, db: Session = Depends(get_db)):
     """
     Deletes an asset, its columns, its version history, and all active lineage relationships connected to it.
     """
-    success = AssetRepository(db).delete(asset_id)
+    asset_repo = AssetRepository(db)
+    asset = asset_repo.get_by_id(asset_id)
+    if not asset:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Asset with ID '{asset_id}' not found."
+        )
+    workspace_id = asset.workspace_id
+    success = asset_repo.delete(asset_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -547,7 +597,7 @@ async def delete_asset(asset_id: str, db: Session = Depends(get_db)):
         )
     
     # Broadcast asset deletion event
-    await manager.broadcast({"event_type": "asset_deleted", "data": {"id": asset_id}})
+    await manager.broadcast({"event_type": "asset_deleted", "data": {"id": asset_id, "workspace_id": workspace_id}})
     
     return {"status": "success", "message": f"Asset '{asset_id}' successfully deleted."}
 
@@ -566,22 +616,31 @@ def get_asset_history(asset_id: str, db: Session = Depends(get_db)):
     return asset_repo.get_version_history(asset_id)
 
 @router.post("/sync")
-async def sync_workspace(payload: WorkspaceSync, db: Session = Depends(get_db)):
+async def sync_workspace(
+    payload: WorkspaceSync,
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Overwrites the current workspace state (assets, columns, relationships) in a single transaction.
     Used for instant session-wide Undo/Redo.
     """
     try:
-        # Delete existing data in reverse order of foreign key dependencies
-        db.query(RelationshipModel).delete()
-        db.query(ColumnModel).delete()
-        db.query(Asset).delete()
+        # Get all asset IDs in this workspace first
+        asset_ids = [a.id for a in db.query(Asset.id).filter(Asset.workspace_id == x_workspace_id).all()]
+        
+        # Delete existing data of the active workspace in reverse order of foreign key dependencies
+        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == x_workspace_id).delete()
+        if asset_ids:
+            db.query(ColumnModel).filter(ColumnModel.asset_id.in_(asset_ids)).delete()
+        db.query(Asset).filter(Asset.workspace_id == x_workspace_id).delete()
         db.commit()
 
         # Insert assets and columns
         for a in payload.assets:
             db_asset = Asset(
                 id=a.id,
+                workspace_id=x_workspace_id,
                 name=a.name,
                 asset_type=a.asset_type,
                 description=a.description or "",
@@ -627,6 +686,7 @@ async def sync_workspace(payload: WorkspaceSync, db: Session = Depends(get_db)):
         for r in payload.relationships:
             db_rel = RelationshipModel(
                 id=r.id,
+                workspace_id=x_workspace_id,
                 source_node_type=r.source_node_type,
                 source_node_id=r.source_node_id,
                 destination_node_type=r.destination_node_type,
@@ -640,11 +700,86 @@ async def sync_workspace(payload: WorkspaceSync, db: Session = Depends(get_db)):
         db.commit()
 
         # Broadcast sync event
-        await manager.broadcast({"event_type": "workspace_synced", "data": {}})
+        await manager.broadcast({"event_type": "workspace_synced", "data": {"workspace_id": x_workspace_id}})
         return {"status": "success", "message": "Workspace synced successfully."}
     except Exception as e:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Workspace sync failed: {str(e)}"
+        )
+
+from pydantic import BaseModel
+
+class WorkspaceRenamePayload(BaseModel):
+    old_name: str
+    new_name: str
+
+class WorkspaceDeletePayload(BaseModel):
+    workspace_id: str
+
+@router.post("/workspace/rename")
+async def rename_workspace(payload: WorkspaceRenamePayload, db: Session = Depends(get_db)):
+    """
+    Renames a workspace. Updates workspace_id in all models (Asset, RelationshipModel, ActivityLog, ImportDraft).
+    """
+    try:
+        # Perform updates
+        db.query(Asset).filter(Asset.workspace_id == payload.old_name).update({Asset.workspace_id: payload.new_name}, synchronize_session=False)
+        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == payload.old_name).update({RelationshipModel.workspace_id: payload.new_name}, synchronize_session=False)
+        db.query(ActivityLog).filter(ActivityLog.workspace_id == payload.old_name).update({ActivityLog.workspace_id: payload.new_name}, synchronize_session=False)
+        db.query(ImportDraft).filter(ImportDraft.workspace_id == payload.old_name).update({ImportDraft.workspace_id: payload.new_name}, synchronize_session=False)
+        
+        db.commit()
+        
+        # Broadcast rename event to clients to dynamically update their UI / connection
+        await manager.broadcast({
+            "event_type": "workspace_renamed",
+            "data": {
+                "old_name": payload.old_name,
+                "new_name": payload.new_name
+            }
+        })
+        
+        return {"status": "success", "message": f"Workspace '{payload.old_name}' renamed to '{payload.new_name}'."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to rename workspace: {str(e)}"
+        )
+
+@router.post("/workspace/delete")
+async def delete_workspace(payload: WorkspaceDeletePayload, db: Session = Depends(get_db)):
+    """
+    Deletes a workspace. Deletes all Assets (and cascades columns), Relationships, ActivityLogs, and ImportDrafts.
+    """
+    try:
+        # Let's delete relationships first to avoid FK constraints
+        db.query(RelationshipModel).filter(RelationshipModel.workspace_id == payload.workspace_id).delete(synchronize_session=False)
+        
+        # Delete assets (which will cascade columns)
+        assets_to_delete = db.query(Asset).filter(Asset.workspace_id == payload.workspace_id).all()
+        for asset in assets_to_delete:
+            db.delete(asset)
+            
+        db.query(ActivityLog).filter(ActivityLog.workspace_id == payload.workspace_id).delete(synchronize_session=False)
+        db.query(ImportDraft).filter(ImportDraft.workspace_id == payload.workspace_id).delete(synchronize_session=False)
+        
+        db.commit()
+        
+        # Broadcast delete event to clients
+        await manager.broadcast({
+            "event_type": "workspace_deleted",
+            "data": {
+                "workspace_id": payload.workspace_id
+            }
+        })
+        
+        return {"status": "success", "message": f"Workspace '{payload.workspace_id}' deleted."}
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete workspace: {str(e)}"
         )

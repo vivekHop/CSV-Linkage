@@ -11,6 +11,7 @@ class Asset(Base):
     __tablename__ = "assets"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
     name = Column(String(255), nullable=False)
     asset_type = Column(String(50), nullable=False, default="csv")
     description = Column(Text, nullable=True)
@@ -75,6 +76,7 @@ class RelationshipModel(Base):
     __tablename__ = "relationships"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
     
     # Source node info
     source_node_type = Column(String(50), nullable=False) # 'asset' or 'column'
@@ -117,6 +119,7 @@ class ActivityLog(Base):
     __tablename__ = "activity_logs"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
     activity_type = Column(String(50), nullable=False) # e.g. 'asset_created', 'asset_updated', 'relationship_created', 'relationship_deleted'
     details = Column(Text, nullable=False)
     asset_id = Column(String(36), nullable=True)
@@ -129,6 +132,7 @@ class ImportDraft(Base):
     __tablename__ = "import_drafts"
 
     id = Column(String(36), primary_key=True, default=generate_uuid)
+    workspace_id = Column(String(255), nullable=False, default="Workspace 1")
     name = Column(String(255), nullable=False)
     draft_json = Column(JSON, nullable=False) # { "assets": [...], "relationships": [...] }
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)

@@ -1,5 +1,5 @@
-import React, { useState, useRef } from 'react';
-import { Upload, Search, FileSpreadsheet, Loader2, Focus, Trash2, Tag, BookOpen, User, FileText } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, Search, FileSpreadsheet, Loader2, Focus, Trash2, Tag, BookOpen, User, FileText, ChevronDown, Plus, LayoutGrid, Check } from 'lucide-react';
 import { api } from '../api';
 import type { Asset, SearchResultItem } from '../types';
 import { CommentsPanel } from './Comments';
@@ -13,6 +13,14 @@ interface LeftSidebarProps {
   selectedAssetId?: string | null;
   onSelectAssetHeader?: (assetId: string) => void;
   onShowImportPreview?: (previewData: { assets: any[]; relationships: any[] }) => void;
+  
+  // Workspace props
+  activeWorkspace: string;
+  workspaces: string[];
+  onSelectWorkspace: (workspaceId: string) => void;
+  onAddWorkspace: (name: string) => void;
+  onRenameWorkspace: (oldName: string, newName: string) => void;
+  onDeleteWorkspace: (workspaceId: string) => void;
   
   // Comments props
   comments: CanvasComment[];
@@ -31,6 +39,12 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   selectedAssetId,
   onSelectAssetHeader,
   onShowImportPreview,
+  activeWorkspace,
+  workspaces,
+  onSelectWorkspace,
+  onAddWorkspace,
+  onRenameWorkspace,
+  onDeleteWorkspace,
   comments,
   isCommentMode,
   onToggleCommentMode,
@@ -44,8 +58,42 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [commentsExpanded, setCommentsExpanded] = useState(true);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    const handleOutsideClick = (e: MouseEvent) => {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
+        setDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleOutsideClick);
+    return () => document.removeEventListener('mousedown', handleOutsideClick);
+  }, []);
+
+  const handleAddNewWorkspace = () => {
+    const name = prompt("Enter new workspace name:");
+    if (name && name.trim()) {
+      onAddWorkspace(name.trim());
+      setDropdownOpen(false);
+    }
+  };
+
+  const handleRenameWorkspace = (ws: string) => {
+    const newName = prompt(`Rename workspace "${ws}" to:`, ws);
+    if (newName && newName.trim() && newName.trim() !== ws) {
+      onRenameWorkspace(ws, newName.trim());
+    }
+  };
+
+  const handleDeleteWorkspace = (ws: string) => {
+    if (confirm(`Are you sure you want to permanently delete workspace "${ws}"? This will delete all its tables, relationships, and history.`)) {
+      onDeleteWorkspace(ws);
+    }
+  };
 
   // Handle live search
   const handleSearchChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -116,20 +164,104 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
   };
 
   return (
-    <aside className="w-full h-full bg-workspace-850 border-r border-workspace-750 flex flex-col z-10 select-none overflow-hidden">
-      {/* Platform Logo */}
-      <div className="px-6 py-4 border-b border-workspace-750 flex items-center space-x-2 shrink-0">
-        <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-brand-teal-dark to-brand-teal flex items-center justify-center text-workspace-950 font-bold text-lg shadow-glow-teal">
-          C
-        </div>
-        <div>
-          <h1 className="text-md font-bold tracking-tight bg-gradient-to-r from-workspace-50 to-workspace-200 bg-clip-text text-transparent">
-            CSV Linkage
-          </h1>
-          <p className="text-[10px] text-workspace-600 font-medium tracking-wide uppercase">
-            Lineage & Profiling Studio
-          </p>
-        </div>
+    <aside className="w-full h-full bg-workspace-850 border-r border-workspace-750 flex flex-col z-10 select-none overflow-hidden font-sans">
+      {/* Workspace Selector Dropdown Header */}
+      <div className="relative px-4 py-3.5 border-b border-workspace-750 shrink-0 z-50" ref={dropdownRef}>
+        <button
+          onClick={() => setDropdownOpen(!dropdownOpen)}
+          className="w-full flex items-center justify-between p-2 rounded-xl bg-workspace-800 hover:bg-workspace-750 border border-workspace-700/80 hover:border-brand-teal/40 transition-all duration-200 group text-left cursor-pointer"
+        >
+          <div className="flex items-center space-x-2.5 min-w-0">
+            <div className="w-7 h-7 rounded-lg bg-gradient-to-tr from-brand-teal/80 to-brand-teal flex items-center justify-center text-workspace-950 font-bold text-sm shadow-glow-teal shrink-0 select-none">
+              {activeWorkspace.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0 flex-1">
+              <span className="block text-xs font-semibold text-workspace-50 truncate leading-tight">
+                {activeWorkspace}
+              </span>
+              <span className="block text-[9px] text-workspace-500 font-medium tracking-wide uppercase">
+                Active Workspace
+              </span>
+            </div>
+          </div>
+          <ChevronDown size={14} className={`text-workspace-400 group-hover:text-workspace-200 transition-transform duration-200 shrink-0 ${dropdownOpen ? 'rotate-180 text-brand-teal' : ''}`} />
+        </button>
+
+        {dropdownOpen && (
+          <div className="absolute left-4 right-4 top-full mt-1.5 bg-workspace-900 border border-workspace-750 rounded-xl shadow-2xl p-1.5 z-50 flex flex-col space-y-0.5 animate-fadeIn">
+            <div className="px-2.5 py-1.5 text-[9px] font-bold text-workspace-500 uppercase tracking-wider select-none">
+              Switch Workspace
+            </div>
+            
+            <div className="max-h-48 overflow-y-auto space-y-0.5 pr-1">
+              {workspaces.map((ws) => {
+                const isSelected = ws === activeWorkspace;
+                return (
+                  <div
+                    key={ws}
+                    className={`group/item flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                      isSelected
+                        ? 'bg-brand-teal/10 text-brand-teal border border-brand-teal/20'
+                        : 'text-workspace-300 hover:bg-workspace-800 hover:text-workspace-50 border border-transparent'
+                    }`}
+                  >
+                    <button
+                      onClick={() => {
+                        onSelectWorkspace(ws);
+                        setDropdownOpen(false);
+                      }}
+                      className="flex-1 min-w-0 flex items-center space-x-2 truncate text-left cursor-pointer"
+                    >
+                      <LayoutGrid size={12} className={isSelected ? 'text-brand-teal' : 'text-workspace-500'} />
+                      <span className="truncate">{ws}</span>
+                    </button>
+                    
+                    <div className="flex items-center space-x-1 shrink-0 opacity-0 group-hover/item:opacity-100 transition-opacity">
+                      {/* Edit Button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleRenameWorkspace(ws);
+                        }}
+                        title="Rename Workspace"
+                        className="p-1 hover:bg-workspace-700 rounded text-workspace-400 hover:text-brand-teal transition-colors cursor-pointer"
+                      >
+                        <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-2.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                      </button>
+                      
+                      {/* Delete Button */}
+                      {workspaces.length > 1 && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleDeleteWorkspace(ws);
+                          }}
+                          title="Delete Workspace"
+                          className="p-1 hover:bg-workspace-700 rounded text-workspace-400 hover:text-red-400 transition-colors cursor-pointer"
+                        >
+                          <Trash2 size={12} />
+                        </button>
+                      )}
+                    </div>
+                    {isSelected && <Check size={12} className="text-brand-teal shrink-0 ml-1.5 group-hover/item:hidden" />}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="border-t border-workspace-750/60 my-1 pt-1">
+              <button
+                onClick={handleAddNewWorkspace}
+                className="w-full flex items-center space-x-2 px-2.5 py-2 rounded-lg text-xs font-semibold text-brand-teal hover:bg-brand-teal/10 transition-all text-left cursor-pointer"
+              >
+                <Plus size={14} />
+                <span>Create New Workspace</span>
+              </button>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* CSV Upload Section */}

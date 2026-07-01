@@ -54,7 +54,8 @@ async def websocket_endpoint(websocket: WebSocket):
     WebSocket endpoint for real-time collaborative events and presence (Figma-style).
     All connected users immediately receive events broadcasted here.
     """
-    await manager.connect(websocket)
+    workspace_id = websocket.query_params.get("workspace_id", "Workspace 1")
+    await manager.connect(websocket, workspace_id)
     try:
         while True:
             # Wait for any message from the client
@@ -69,7 +70,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 # If not json, broadcast as raw text
                 await manager.broadcast({"event_type": "raw_message", "data": data})
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
-        manager.disconnect(websocket)
+        await manager.disconnect(websocket)

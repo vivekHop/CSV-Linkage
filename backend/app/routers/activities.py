@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, Header, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -8,8 +8,12 @@ from app.repositories import ActivityLogRepository
 router = APIRouter(prefix="/activities", tags=["Activities"])
 
 @router.get("", response_model=List[ActivityLogResponse])
-def get_recent_activities(limit: int = Query(50, ge=1, le=100), db: Session = Depends(get_db)):
+def get_recent_activities(
+    limit: int = Query(50, ge=1, le=100),
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Retrieves a list of recent user activities on the workspace (e.g. uploads, edits, lineage creations).
     """
-    return ActivityLogRepository(db).get_recent(limit)
+    return ActivityLogRepository(db).get_recent(x_workspace_id, limit)

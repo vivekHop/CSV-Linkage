@@ -10,12 +10,24 @@ if (wsUrl.startsWith('http://')) {
 }
 export const WS_URL = wsUrl;
 
+let activeWorkspaceId = localStorage.getItem('activeWorkspaceId') || 'Workspace 1';
+
+export function setActiveWorkspaceId(workspaceId: string) {
+  activeWorkspaceId = workspaceId;
+  localStorage.setItem('activeWorkspaceId', workspaceId);
+}
+
+export function getActiveWorkspaceId() {
+  return activeWorkspaceId;
+}
+
 // API Client Wrapper
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      'X-Workspace-Id': activeWorkspaceId,
       ...(options?.headers || {}),
     },
   });
@@ -49,6 +61,9 @@ export const api = {
     const res = await fetch(`${API_URL}/assets/upload`, {
       method: 'POST',
       body: formData,
+      headers: {
+        'X-Workspace-Id': activeWorkspaceId,
+      },
       // Do NOT set Content-Type header; browser automatically sets multipart/form-data boundary
     });
     
@@ -130,6 +145,9 @@ export const api = {
     const res = await fetch(`${API_URL}/assets/profile-preview`, {
       method: 'POST',
       body: formData,
+      headers: {
+        'X-Workspace-Id': activeWorkspaceId,
+      },
     });
     
     if (!res.ok) {
@@ -158,5 +176,18 @@ export const api = {
   deleteDraft: (draftId: string) =>
     request<{ status: string; message: string }>(`/assets/drafts/${draftId}`, {
       method: 'DELETE',
+    }),
+
+  // Workspace CRUD
+  renameWorkspace: (oldName: string, newName: string) =>
+    request<{ status: string; message: string }>('/assets/workspace/rename', {
+      method: 'POST',
+      body: JSON.stringify({ old_name: oldName, new_name: newName }),
+    }),
+
+  deleteWorkspace: (workspaceId: string) =>
+    request<{ status: string; message: string }>('/assets/workspace/delete', {
+      method: 'POST',
+      body: JSON.stringify({ workspace_id: workspaceId }),
     }),
 };

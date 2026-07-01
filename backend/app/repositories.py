@@ -64,6 +64,10 @@ def cleanup_formula_on_rel_deletion(db: Session, source_col_id: str, dest_col_id
     source_col = db.query(ColumnModel).filter(ColumnModel.id == source_col_id).first()
     source_col_name = source_col.name if source_col else None
     
+    # Fetch source asset name
+    source_asset = db.query(Asset).filter(Asset.id == source_col.asset_id).first() if source_col else None
+    source_asset_name = source_asset.name if source_asset else None
+    
     # Check if this destination column has any OTHER active incoming lineage relationships
     other_incoming_rels = db.query(RelationshipModel).filter(
         RelationshipModel.destination_node_type == "column",
@@ -78,20 +82,45 @@ def cleanup_formula_on_rel_deletion(db: Session, source_col_id: str, dest_col_id
         dest_col.custom_attributes = new_attrs
     else:
         # There are other sources left, we clean up this source's column references in the formula
-        if source_col_name:
-            # Clean f"[{source_col_name}]" or f"[{asset_name}.{source_col_name}]"
-            escaped_name = re.escape(source_col_name)
-            # Match [source_col_name] or [Anything.source_col_name]
-            pattern = rf"\[([^\]]+\.)?{escaped_name}\]"
-            cleaned_formula = re.sub(pattern, "", formula)
+        if source_col_name and source_asset_name:
+            import re
+            # Get possible table names
+            possible_tables = [source_asset_name]
+            
+            # Parse sheet and book names
+            match = re.match(r"^(.+?)\s*\[([^\]]+)\]$", source_asset_name)
+            if match:
+                book_name = match.group(1).strip()
+                sheet_name = match.group(2).strip()
+                book_name_no_ext = re.sub(r"\.(xlsx|xls|ods|csv|tsv)$", "", book_name, flags=re.IGNORECASE)
+                
+                possible_tables.append(f"{book_name}.{sheet_name}")
+                possible_tables.append(f"{book_name_no_ext}.{sheet_name}")
+                possible_tables.append(sheet_name)
+            
+            cleaned_formula = formula
+            escaped_col = re.escape(source_col_name)
+            
+            for t in possible_tables:
+                escaped_table = re.escape(t)
+                # Match [table][col]
+                pattern_double = rf"\[\s*{escaped_table}\s*\]\s*\[\s*{escaped_col}\s*\]"
+                cleaned_formula = re.sub(pattern_double, "", cleaned_formula, flags=re.IGNORECASE)
+                # Match [table.col]
+                pattern_single = rf"\[\s*{escaped_table}\.{escaped_col}\s*\]"
+                cleaned_formula = re.sub(pattern_single, "", cleaned_formula, flags=re.IGNORECASE)
+                
+            # Also fallback to matching just the column name if it was single bracketed without table name
+            pattern_col_only = rf"\[\s*{escaped_col}\s*\]"
+            cleaned_formula = re.sub(pattern_col_only, "", cleaned_formula, flags=re.IGNORECASE)
             
             # Clean up dangling mathematical operators
-            cleaned_formula = re.sub(r'\s*[\+\-\*\/]\s*(?=[\+\-\*\/])', '', cleaned_formula) # remove duplicated operators
+            cleaned_formula = re.sub(r'\s*[\+\-\*\/%]\s*(?=[\+\-\*\/%])', '', cleaned_formula) # remove duplicated operators
             cleaned_formula = cleaned_formula.strip()
             # Clean leading/trailing operator
-            if cleaned_formula.startswith('+') or cleaned_formula.startswith('-') or cleaned_formula.startswith('*') or cleaned_formula.startswith('/'):
+            if cleaned_formula.startswith('+') or cleaned_formula.startswith('-') or cleaned_formula.startswith('*') or cleaned_formula.startswith('/') or cleaned_formula.startswith('%'):
                 cleaned_formula = cleaned_formula[1:].strip()
-            if cleaned_formula.endswith('+') or cleaned_formula.endswith('-') or cleaned_formula.endswith('*') or cleaned_formula.endswith('/'):
+            if cleaned_formula.endswith('+') or cleaned_formula.endswith('-') or cleaned_formula.endswith('*') or cleaned_formula.endswith('/') or cleaned_formula.endswith('%'):
                 cleaned_formula = cleaned_formula[:-1].strip()
                 
             new_attrs = dict(custom_attrs)
@@ -129,10 +158,10 @@ class AssetRepository(BaseRepository):
     def get_by_id(self, asset_id: str) -> Optional[Asset]:
         return self.db.query(Asset).filter(Asset.id == asset_id).first()
 
-    def get_all(self) -> List[Asset]:
-        return self.db.query(Asset).order_by(Asset.name).all()
+    def get_all(self, workspace_id: str) -> List[Asset]:
+        return self.db.query(Asset).filter(Asset.workspace_id == workspace_id).order_by(Asset.name).all()
 
-    def create(self, name: str, asset_type: str, row_count: int, column_count: int, file_size: int,
+    def create(self, workspace_id: str, name: str, asset_type: str, row_count: int, column_count: int, file_size: int,
                description: str = "", owner: str = "", notes: str = "", tags: List[str] = None,
                custom_attributes: Dict[str, Any] = None) -> Asset:
         if tags is None:
@@ -141,6 +170,7 @@ class AssetRepository(BaseRepository):
             custom_attributes = {}
             
         db_asset = Asset(
+            workspace_id=workspace_id,
             name=name,
             asset_type=asset_type,
             row_count=row_count,
@@ -161,10 +191,11 @@ class AssetRepository(BaseRepository):
         self.create_version_history(db_asset, "Initial Upload")
         
         # Log Activity
-        self.log_activity("asset_created", f"Uploaded CSV asset '{name}' with {column_count} columns.", db_asset.id)
+        self.log_activity(workspace_id, "asset_created", f"Uploaded CSV asset '{name}' with {column_count} columns.", db_asset.id)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("asset_created", {
+            "workspace_id": workspace_id,
             "id": db_asset.id,
             "name": db_asset.name,
             "row_count": db_asset.row_count,
@@ -195,10 +226,11 @@ class AssetRepository(BaseRepository):
         self.create_version_history(db_asset, change_summary)
         
         # Log Activity
-        self.log_activity("asset_updated", f"Updated CSV asset metadata for '{db_asset.name}': {change_summary}", db_asset.id)
+        self.log_activity(db_asset.workspace_id, "asset_updated", f"Updated CSV asset metadata for '{db_asset.name}': {change_summary}", db_asset.id)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("asset_updated", {
+            "workspace_id": db_asset.workspace_id,
             "id": db_asset.id,
             "name": db_asset.name,
             "version": db_asset.version,
@@ -213,6 +245,7 @@ class AssetRepository(BaseRepository):
             return False
             
         asset_name = db_asset.name
+        workspace_id = db_asset.workspace_id
         
         # Find and delete any relationship where this asset is source or destination
         asset_rels = self.db.query(RelationshipModel).filter(
@@ -242,10 +275,11 @@ class AssetRepository(BaseRepository):
         self.db.commit()
         
         # Log Activity
-        self.log_activity("asset_deleted", f"Deleted CSV asset '{asset_name}'.", None)
+        self.log_activity(workspace_id, "asset_deleted", f"Deleted CSV asset '{asset_name}'.", None)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("asset_deleted", {
+            "workspace_id": workspace_id,
             "id": asset_id,
             "name": asset_name
         })
@@ -267,8 +301,9 @@ class AssetRepository(BaseRepository):
     def get_version_history(self, asset_id: str) -> List[VersionHistory]:
         return self.db.query(VersionHistory).filter(VersionHistory.asset_id == asset_id).order_by(VersionHistory.version_number.desc()).all()
 
-    def log_activity(self, activity_type: str, details: str, asset_id: Optional[str] = None):
+    def log_activity(self, workspace_id: str, activity_type: str, details: str, asset_id: Optional[str] = None):
         activity = ActivityLog(
+            workspace_id=workspace_id,
             activity_type=activity_type,
             details=details,
             asset_id=asset_id
@@ -277,6 +312,7 @@ class AssetRepository(BaseRepository):
         self.db.commit()
         # Broadcast activity to all users
         self._trigger_broadcast("activity_logged", {
+            "workspace_id": workspace_id,
             "activity_type": activity_type,
             "details": details,
             "created_at": activity.created_at.isoformat() if activity.created_at else None
@@ -331,10 +367,11 @@ class ColumnRepository(BaseRepository):
         asset_repo.update(db_col.asset_id, {"updated_at": datetime.utcnow()})
         
         # Log Activity
-        self.log_activity("column_updated", f"Updated column metadata for '{db_col.asset.name}.{db_col.name}'", db_col.asset_id)
+        self.log_activity(db_col.asset.workspace_id, "column_updated", f"Updated column metadata for '{db_col.asset.name}.{db_col.name}'", db_col.asset_id)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("column_updated", {
+            "workspace_id": db_col.asset.workspace_id,
             "id": db_col.id,
             "asset_id": db_col.asset_id,
             "name": db_col.name,
@@ -351,6 +388,7 @@ class ColumnRepository(BaseRepository):
         column_name = db_col.name
         asset_name = db_col.asset.name
         asset_id = db_col.asset_id
+        workspace_id = db_col.asset.workspace_id
         
         # Delete related relationships first
         col_rels = self.db.query(RelationshipModel).filter(
@@ -376,10 +414,11 @@ class ColumnRepository(BaseRepository):
             asset_repo.update(asset_id, {"column_count": new_col_count})
 
         # Log Activity
-        self.log_activity("column_deleted", f"Deleted column '{column_name}' from CSV asset '{asset_name}'.", asset_id)
+        self.log_activity(workspace_id, "column_deleted", f"Deleted column '{column_name}' from CSV asset '{asset_name}'.", asset_id)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("column_deleted", {
+            "workspace_id": workspace_id,
             "id": column_id,
             "asset_id": asset_id,
             "name": column_name
@@ -387,8 +426,9 @@ class ColumnRepository(BaseRepository):
         
         return True
 
-    def log_activity(self, activity_type: str, details: str, asset_id: Optional[str] = None):
+    def log_activity(self, workspace_id: str, activity_type: str, details: str, asset_id: Optional[str] = None):
         activity = ActivityLog(
+            workspace_id=workspace_id,
             activity_type=activity_type,
             details=details,
             asset_id=asset_id
@@ -396,6 +436,7 @@ class ColumnRepository(BaseRepository):
         self.db.add(activity)
         self.db.commit()
         self._trigger_broadcast("activity_logged", {
+            "workspace_id": workspace_id,
             "activity_type": activity_type,
             "details": details,
             "created_at": activity.created_at.isoformat() if activity.created_at else None
@@ -406,16 +447,17 @@ class RelationshipRepository(BaseRepository):
     def get_by_id(self, rel_id: str) -> Optional[RelationshipModel]:
         return self.db.query(RelationshipModel).filter(RelationshipModel.id == rel_id).first()
 
-    def get_all(self) -> List[RelationshipModel]:
-        return self.db.query(RelationshipModel).all()
+    def get_all(self, workspace_id: str) -> List[RelationshipModel]:
+        return self.db.query(RelationshipModel).filter(RelationshipModel.workspace_id == workspace_id).all()
 
-    def create(self, source_node_type: str, source_node_id: str,
+    def create(self, workspace_id: str, source_node_type: str, source_node_id: str,
                destination_node_type: str, destination_node_id: str,
                relationship_type: str, metadata_json: Dict[str, Any] = None) -> RelationshipModel:
         if metadata_json is None:
             metadata_json = {}
             
         db_rel = RelationshipModel(
+            workspace_id=workspace_id,
             source_node_type=source_node_type,
             source_node_id=source_node_id,
             destination_node_type=destination_node_type,
@@ -426,6 +468,7 @@ class RelationshipRepository(BaseRepository):
         
         # Check for duplicate connection first to avoid duplicate nodes
         existing = self.db.query(RelationshipModel).filter(
+            RelationshipModel.workspace_id == workspace_id,
             RelationshipModel.source_node_type == source_node_type,
             RelationshipModel.source_node_id == source_node_id,
             RelationshipModel.destination_node_type == destination_node_type,
@@ -442,10 +485,11 @@ class RelationshipRepository(BaseRepository):
         
         # Log Activity
         details = f"Created lineage edge: {source_node_type} ({source_node_id}) {relationship_type} {destination_node_type} ({destination_node_id})"
-        self.log_activity("relationship_created", details, None)
+        self.log_activity(workspace_id, "relationship_created", details, None)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_created", {
+            "workspace_id": workspace_id,
             "id": db_rel.id,
             "source_node_type": db_rel.source_node_type,
             "source_node_id": db_rel.source_node_id,
@@ -474,6 +518,7 @@ class RelationshipRepository(BaseRepository):
         
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_updated", {
+            "workspace_id": db_rel.workspace_id,
             "id": db_rel.id,
             "source_node_id": db_rel.source_node_id,
             "destination_node_id": db_rel.destination_node_id,
@@ -488,6 +533,7 @@ class RelationshipRepository(BaseRepository):
         if not db_rel:
             return False
             
+        workspace_id = db_rel.workspace_id
         source_id = db_rel.source_node_id
         dest_id = db_rel.destination_node_id
         rel_type = db_rel.relationship_type
@@ -500,10 +546,11 @@ class RelationshipRepository(BaseRepository):
         self.db.commit()
         
         # Log Activity
-        self.log_activity("relationship_deleted", f"Removed lineage edge: {source_id} -> {dest_id} ({rel_type})", None)
+        self.log_activity(workspace_id, "relationship_deleted", f"Removed lineage edge: {source_id} -> {dest_id} ({rel_type})", None)
         
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_deleted", {
+            "workspace_id": workspace_id,
             "id": rel_id,
             "source_node_id": source_id,
             "destination_node_id": dest_id
@@ -511,8 +558,9 @@ class RelationshipRepository(BaseRepository):
         
         return True
 
-    def log_activity(self, activity_type: str, details: str, asset_id: Optional[str] = None):
+    def log_activity(self, workspace_id: str, activity_type: str, details: str, asset_id: Optional[str] = None):
         activity = ActivityLog(
+            workspace_id=workspace_id,
             activity_type=activity_type,
             details=details,
             asset_id=asset_id
@@ -520,6 +568,7 @@ class RelationshipRepository(BaseRepository):
         self.db.add(activity)
         self.db.commit()
         self._trigger_broadcast("activity_logged", {
+            "workspace_id": workspace_id,
             "activity_type": activity_type,
             "details": details,
             "created_at": activity.created_at.isoformat() if activity.created_at else None
@@ -527,7 +576,7 @@ class RelationshipRepository(BaseRepository):
 
 
 class SearchRepository(BaseRepository):
-    def search(self, query_str: str) -> List[Dict[str, Any]]:
+    def search(self, workspace_id: str, query_str: str) -> List[Dict[str, Any]]:
         """
         Searches Assets and Columns tables for name, description, tags, notes, business notes, etc.
         Returns unified search results that map back to React Flow canvas nodes.
@@ -540,6 +589,7 @@ class SearchRepository(BaseRepository):
         
         # 1. Search Assets (CSV Files)
         assets = self.db.query(Asset).filter(
+            Asset.workspace_id == workspace_id,
             or_(
                 Asset.name.ilike(search_term),
                 Asset.description.ilike(search_term),
@@ -576,6 +626,7 @@ class SearchRepository(BaseRepository):
             
         # 2. Search Columns
         columns = self.db.query(ColumnModel).join(Asset).filter(
+            Asset.workspace_id == workspace_id,
             or_(
                 ColumnModel.name.ilike(search_term),
                 ColumnModel.description.ilike(search_term),
@@ -611,19 +662,19 @@ class SearchRepository(BaseRepository):
 
 
 class ActivityLogRepository(BaseRepository):
-    def get_recent(self, limit: int = 50) -> List[ActivityLog]:
-        return self.db.query(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(limit).all()
+    def get_recent(self, workspace_id: str, limit: int = 50) -> List[ActivityLog]:
+        return self.db.query(ActivityLog).filter(ActivityLog.workspace_id == workspace_id).order_by(ActivityLog.created_at.desc()).limit(limit).all()
 
 
 class ImportDraftRepository(BaseRepository):
-    def get_all(self) -> List[ImportDraft]:
-        return self.db.query(ImportDraft).order_by(ImportDraft.created_at.desc()).all()
+    def get_all(self, workspace_id: str) -> List[ImportDraft]:
+        return self.db.query(ImportDraft).filter(ImportDraft.workspace_id == workspace_id).order_by(ImportDraft.created_at.desc()).all()
 
     def get_by_id(self, draft_id: str) -> Optional[ImportDraft]:
         return self.db.query(ImportDraft).filter(ImportDraft.id == draft_id).first()
 
-    def create(self, name: str, draft_json: Dict[str, Any]) -> ImportDraft:
-        db_draft = ImportDraft(name=name, draft_json=draft_json)
+    def create(self, workspace_id: str, name: str, draft_json: Dict[str, Any]) -> ImportDraft:
+        db_draft = ImportDraft(workspace_id=workspace_id, name=name, draft_json=draft_json)
         self.db.add(db_draft)
         self.db.commit()
         self.db.refresh(db_draft)

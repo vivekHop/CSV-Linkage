@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Header, status
 from sqlalchemy.orm import Session
 from typing import List
 from app.database import get_db
@@ -10,7 +10,11 @@ from app.websockets import manager
 router = APIRouter(prefix="/relationships", tags=["Relationships"])
 
 @router.post("", response_model=RelationshipResponse, status_code=status.HTTP_201_CREATED)
-async def create_relationship(relationship: RelationshipCreate, db: Session = Depends(get_db)):
+async def create_relationship(
+    relationship: RelationshipCreate,
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Creates a new lineage relationship (edge) between two assets, an asset and a column, or two columns.
     Supported relationship types: DERIVES_FROM, MAPS_TO, LOOKUP_FROM, COPIED_FROM.
@@ -33,6 +37,7 @@ async def create_relationship(relationship: RelationshipCreate, db: Session = De
 
     rel_repo = RelationshipRepository(db)
     created_rel = rel_repo.create(
+        workspace_id=x_workspace_id,
         source_node_type=relationship.source_node_type,
         source_node_id=relationship.source_node_id,
         destination_node_type=relationship.destination_node_type,
@@ -42,16 +47,19 @@ async def create_relationship(relationship: RelationshipCreate, db: Session = De
     )
     
     # Broadcast relationship creation event
-    await manager.broadcast({"event_type": "relationship_created", "data": {"id": created_rel.id}})
+    await manager.broadcast({"event_type": "relationship_created", "data": {"id": created_rel.id, "workspace_id": x_workspace_id}})
     
     return created_rel
 
 @router.get("", response_model=List[RelationshipResponse])
-def list_relationships(db: Session = Depends(get_db)):
+def list_relationships(
+    x_workspace_id: str = Header("Workspace 1"),
+    db: Session = Depends(get_db)
+):
     """
     Retrieves all lineage relationships.
     """
-    return RelationshipRepository(db).get_all()
+    return RelationshipRepository(db).get_all(x_workspace_id)
 
 @router.put("/{rel_id}", response_model=RelationshipResponse)
 async def update_relationship(rel_id: str, relationship_update: RelationshipUpdate, db: Session = Depends(get_db)):
@@ -69,7 +77,7 @@ async def update_relationship(rel_id: str, relationship_update: RelationshipUpda
         )
         
     # Broadcast relationship update event
-    await manager.broadcast({"event_type": "relationship_updated", "data": {"id": rel_id}})
+    await manager.broadcast({"event_type": "relationship_updated", "data": {"id": rel_id, "workspace_id": updated_rel.workspace_id}})
     
     return updated_rel
 
@@ -78,7 +86,15 @@ async def delete_relationship(rel_id: str, db: Session = Depends(get_db)):
     """
     Deletes a lineage relationship (edge) from the database.
     """
-    success = RelationshipRepository(db).delete(rel_id)
+    rel_repo = RelationshipRepository(db)
+    rel = rel_repo.get_by_id(rel_id)
+    if not rel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Relationship with ID '{rel_id}' not found."
+        )
+    workspace_id = rel.workspace_id
+    success = rel_repo.delete(rel_id)
     if not success:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -86,6 +102,6 @@ async def delete_relationship(rel_id: str, db: Session = Depends(get_db)):
         )
         
     # Broadcast relationship deletion event
-    await manager.broadcast({"event_type": "relationship_deleted", "data": {"id": rel_id}})
+    await manager.broadcast({"event_type": "relationship_deleted", "data": {"id": rel_id, "workspace_id": workspace_id}})
     
     return {"status": "success", "message": f"Relationship '{rel_id}' successfully deleted."}

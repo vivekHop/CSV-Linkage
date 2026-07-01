@@ -21,20 +21,42 @@ interface RightSidebarProps {
   showToast?: (message: string, type: 'info' | 'success' | 'warning' | 'error') => void;
 }
 
+const getTableReferenceName = (assetName: string): string => {
+  const bracketMatch = assetName.match(/^(.+?)\s*\[([^\]]+)\]$/);
+  if (bracketMatch) {
+    const bookName = bracketMatch[1].trim().replace(/\.(xlsx|xls|ods)$/i, '');
+    const sheetName = bracketMatch[2].trim();
+    return `${bookName}.${sheetName}`;
+  }
+  return assetName.replace(/\.(csv|xlsx|xls|ods|tsv)$/i, '');
+};
+
 const matchesTableName = (assetName: string, tableName: string): boolean => {
   const nameLower = assetName.toLowerCase();
-  const queryLower = tableName.toLowerCase();
+  const queryLower = tableName.toLowerCase().trim();
   
   if (nameLower === queryLower) return true;
   
-  // Try to extract sheet name from brackets: e.g. "workbook.xlsx [Sheet1]" -> "Sheet1"
-  const bracketMatch = nameLower.match(/\[([^\]]+)\]/);
-  if (bracketMatch && bracketMatch[1].trim() === queryLower) {
-    return true;
+  // Try to parse workbook and sheet name if they exist in "Workbook.xlsx [Sheet1]" format
+  const bracketMatch = assetName.match(/^(.+?)\s*\[([^\]]+)\]$/);
+  if (bracketMatch) {
+    const bookName = bracketMatch[1].trim();
+    const sheetName = bracketMatch[2].trim();
+    const bookNameNoExt = bookName.replace(/\.(xlsx|xls|ods|csv|tsv)$/i, '');
+    
+    const possibleCombinedNames = [
+      `${bookName}.${sheetName}`.toLowerCase(),
+      `${bookNameNoExt}.${sheetName}`.toLowerCase(),
+      sheetName.toLowerCase(),
+      assetName.toLowerCase()
+    ];
+    if (possibleCombinedNames.includes(queryLower)) {
+      return true;
+    }
   }
   
   // Strip extensions like .csv, .xlsx, .ods, .tsv from the asset name
-  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/, '');
+  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/i, '');
   if (strippedName === queryLower) return true;
   
   // If the asset name without extension contains the table name as a whole word
@@ -106,16 +128,12 @@ const FormulaInput: React.FC<FormulaInputProps> = ({
       } else {
         // Typing a table name (only show tables)
         const tableSuggestions = assets
-          .filter(a => a.asset_type !== 'group' && a.name.toLowerCase().includes(query.toLowerCase()))
+          .filter(a => a.asset_type !== 'group' && (
+            a.name.toLowerCase().includes(query.toLowerCase()) ||
+            getTableReferenceName(a.name).toLowerCase().includes(query.toLowerCase())
+          ))
           .map(a => {
-            let cleanName = a.name;
-            const bracketMatch = a.name.match(/\[([^\]]+)\]/);
-            if (bracketMatch) {
-              cleanName = bracketMatch[1].trim();
-            } else {
-              // Strip extensions
-              cleanName = cleanName.replace(/\.(csv|xlsx|ods|tsv)$/i, '');
-            }
+            const cleanName = getTableReferenceName(a.name);
             return {
               label: cleanName,
               value: cleanName + ']',

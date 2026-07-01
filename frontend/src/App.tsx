@@ -10,7 +10,7 @@ import ReactFlow, {
 } from 'reactflow';
 import type { Connection, Edge, Node } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { api, WS_URL } from './api';
+import { api, WS_URL, setActiveWorkspaceId } from './api';
 import type { Asset, Column, Relationship, ActivityLog } from './types';
 import { CSVNode } from './components/CSVNode';
 import { LeftSidebar } from './components/LeftSidebar';
@@ -79,18 +79,30 @@ const getDeterministicColor = (str: string) => {
 // Helper to check if an asset name matches a reference table/sheet name case-insensitively
 const matchesTableName = (assetName: string, tableName: string): boolean => {
   const nameLower = assetName.toLowerCase();
-  const queryLower = tableName.toLowerCase();
+  const queryLower = tableName.toLowerCase().trim();
   
   if (nameLower === queryLower) return true;
   
-  // Try to extract sheet name from brackets: e.g. "workbook.xlsx [Sheet1]" -> "Sheet1"
-  const bracketMatch = nameLower.match(/\[([^\]]+)\]/);
-  if (bracketMatch && bracketMatch[1].trim() === queryLower) {
-    return true;
+  // Try to parse workbook and sheet name if they exist in "Workbook.xlsx [Sheet1]" format
+  const bracketMatch = assetName.match(/^(.+?)\s*\[([^\]]+)\]$/);
+  if (bracketMatch) {
+    const bookName = bracketMatch[1].trim();
+    const sheetName = bracketMatch[2].trim();
+    const bookNameNoExt = bookName.replace(/\.(xlsx|xls|ods|csv|tsv)$/i, '');
+    
+    const possibleCombinedNames = [
+      `${bookName}.${sheetName}`.toLowerCase(),
+      `${bookNameNoExt}.${sheetName}`.toLowerCase(),
+      sheetName.toLowerCase(),
+      assetName.toLowerCase()
+    ];
+    if (possibleCombinedNames.includes(queryLower)) {
+      return true;
+    }
   }
   
   // Strip extensions like .csv, .xlsx, .ods, .tsv from the asset name
-  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/, '');
+  const strippedName = nameLower.replace(/\.(csv|xlsx|ods|tsv)$/i, '');
   if (strippedName === queryLower) return true;
   
   // If the asset name without extension contains the table name as a whole word
@@ -133,8 +145,8 @@ const findReferencedColumnIds = (
     const ref = match[1].trim();
     if (ref.includes('.')) {
       const parts = ref.split('.');
-      const tableName = parts[0].trim().toLowerCase();
-      const colName = parts[1].trim().toLowerCase();
+      const colName = parts[parts.length - 1].trim().toLowerCase();
+      const tableName = parts.slice(0, parts.length - 1).join('.').trim().toLowerCase();
       
       const asset = allAssets.find(a => matchesTableName(a.name, tableName));
       
@@ -161,22 +173,39 @@ const findReferencedColumnIds = (
 // Helper to remove a column reference from a formula string and clean up mathematical operators
 const removeReferenceFromFormula = (formula: string, refName: string): string => {
   let cleaned = formula;
-  if (refName.includes('.')) {
-    const parts = refName.split('.');
-    const table = parts[0].replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-    const col = parts[1].replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+  
+  const lastDotIndex = refName.lastIndexOf('.');
+  if (lastDotIndex !== -1) {
+    const table = refName.substring(0, lastDotIndex);
+    const col = refName.substring(lastDotIndex + 1);
     
-    cleaned = cleaned.replace(new RegExp(`\\[\\s*${table}\\s*\\]\\s*\\[\\s*${col}\\s*\\]`, 'gi'), '');
-    cleaned = cleaned.replace(new RegExp(`\\[\\s*${table}\\.${col}\\s*\\]`, 'gi'), '');
+    const escapedCol = col.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    const possibleTables = [table];
+    
+    const bracketMatch = table.match(/^(.+?)\s*\[([^\]]+)\]$/);
+    if (bracketMatch) {
+      const bookName = bracketMatch[1].trim();
+      const sheetName = bracketMatch[2].trim();
+      const bookNameNoExt = bookName.replace(/\.(xlsx|xls|ods|csv|tsv)$/i, '');
+      possibleTables.push(`${bookName}.${sheetName}`);
+      possibleTables.push(`${bookNameNoExt}.${sheetName}`);
+      possibleTables.push(sheetName);
+    }
+    
+    for (const t of possibleTables) {
+      const escapedTable = t.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+      cleaned = cleaned.replace(new RegExp(`\\[\\s*${escapedTable}\\s*\\]\\s*\\[\\s*${escapedCol}\\s*\\]`, 'gi'), '');
+      cleaned = cleaned.replace(new RegExp(`\\[\\s*${escapedTable}\\.${escapedCol}\\s*\\]`, 'gi'), '');
+    }
   } else {
     const escapedRef = refName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
     cleaned = cleaned.replace(new RegExp(`\\[\\s*${escapedRef}\\s*\\]`, 'gi'), '');
   }
   
   cleaned = cleaned
-    .replace(/\s*[\+\-\*\/]\s*(?=[\+\-\*\/])/g, '')
-    .replace(/^\s*[\+\-\*\/]\s*/, '')
-    .replace(/\s*[\+\-\*\/]\s*$/, '')
+    .replace(/\s*[\+\-\*\/%]\s*(?=[\+\-\*\/%])/g, '')
+    .replace(/^\s*[\+\-\*\/%]\s*/, '')
+    .replace(/\s*[\+\-\*\/%]\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
     
@@ -185,16 +214,29 @@ const removeReferenceFromFormula = (formula: string, refName: string): string =>
 
 // Helper to remove all column references of a specific table from a formula string
 const removeTableReferencesFromFormula = (formula: string, tableName: string): string => {
-  const escapedTable = tableName.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-  // Removes: [table.col]
-  let newFormula = formula.replace(new RegExp(`\\[\\s*${escapedTable}\\.[^\\]]+\\s*\\]`, 'gi'), '');
-  // Removes: [table][col]
-  newFormula = newFormula.replace(new RegExp(`\\[\\s*${escapedTable}\\s*\\]\\s*\\[[^\\]]+\\]`, 'gi'), '');
+  let newFormula = formula;
+  
+  const possibleTables = [tableName];
+  const bracketMatch = tableName.match(/^(.+?)\s*\[([^\]]+)\]$/);
+  if (bracketMatch) {
+    const bookName = bracketMatch[1].trim();
+    const sheetName = bracketMatch[2].trim();
+    const bookNameNoExt = bookName.replace(/\.(xlsx|xls|ods|csv|tsv)$/i, '');
+    possibleTables.push(`${bookName}.${sheetName}`);
+    possibleTables.push(`${bookNameNoExt}.${sheetName}`);
+    possibleTables.push(sheetName);
+  }
+  
+  for (const t of possibleTables) {
+    const escapedTable = t.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
+    newFormula = newFormula.replace(new RegExp(`\\[\\s*${escapedTable}\\.[^\\]]+\\s*\\]`, 'gi'), '');
+    newFormula = newFormula.replace(new RegExp(`\\[\\s*${escapedTable}\\s*\\]\\s*\\[[^\\]]+\\]`, 'gi'), '');
+  }
   
   newFormula = newFormula
-    .replace(/\s*[\+\-\*\/]\s*(?=[\+\-\*\/])/g, '')
-    .replace(/^\s*[\+\-\*\/]\s*/, '')
-    .replace(/\s*[\+\-\*\/]\s*$/, '')
+    .replace(/\s*[\+\-\*\/%]\s*(?=[\+\-\*\/%])/g, '')
+    .replace(/^\s*[\+\-\*\/%]\s*/, '')
+    .replace(/\s*[\+\-\*\/%]\s*$/, '')
     .replace(/\s+/g, ' ')
     .trim();
     
@@ -202,12 +244,28 @@ const removeTableReferencesFromFormula = (formula: string, tableName: string): s
 };
 
 export default function App() {
+  const [workspaces, setWorkspaces] = useState<string[]>(() => {
+    const saved = localStorage.getItem('workspaces');
+    return saved ? JSON.parse(saved) : ['Workspace 1', 'Workspace 2', 'Workspace 3'];
+  });
+  const [activeWorkspace, setActiveWorkspace] = useState<string>(() => {
+    const saved = localStorage.getItem('activeWorkspaceId');
+    return saved || 'Workspace 1';
+  });
+
+  const activeWorkspaceRef = useRef(activeWorkspace);
+  useEffect(() => {
+    activeWorkspaceRef.current = activeWorkspace;
+  }, [activeWorkspace]);
+
   const [assets, setAssets] = useState<Asset[]>([]);
   const [relationships, setRelationships] = useState<Relationship[]>([]);
   const [activities, setActivities] = useState<ActivityLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [backendStatus, setBackendStatus] = useState<'connecting' | 'connected' | 'error'>('connecting');
   const [wsConnected, setWsConnected] = useState(false);
+  const [globalUserCount, setGlobalUserCount] = useState(1);
+  const [workspaceUserCounts, setWorkspaceUserCounts] = useState<Record<string, number>>({});
 
   // Toast notifications
   const [toasts, setToasts] = useState<{ id: string; type: 'info' | 'success' | 'warning' | 'error'; message: string }[]>([]);
@@ -219,6 +277,67 @@ export default function App() {
       setToasts((prev) => prev.filter((t) => t.id !== id));
     }, 4000);
   }, []);
+
+  const handleSelectWorkspace = (workspaceId: string) => {
+    setActiveWorkspace(workspaceId);
+    setActiveWorkspaceId(workspaceId);
+    
+    // Clear selection state
+    setSelectedAssetId(null);
+    setSelectedColumnId(null);
+    setSelectedEdgeId(null);
+    setSelectedNodeIds([]);
+    setSelectedEdgeIds([]);
+    
+    // Load workspace data immediately (which fetches with new X-Workspace-Id header)
+    loadWorkspaceData();
+  };
+
+  const handleAddWorkspace = (name: string) => {
+    if (workspaces.includes(name)) {
+      showToast("Workspace name already exists!", "warning");
+      return;
+    }
+    const nextWorkspaces = [...workspaces, name];
+    setWorkspaces(nextWorkspaces);
+    localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
+    handleSelectWorkspace(name);
+    showToast(`Workspace "${name}" created!`, "success");
+  };
+
+  const handleRenameWorkspace = async (oldName: string, newName: string) => {
+    try {
+      await api.renameWorkspace(oldName, newName);
+      
+      const nextWorkspaces = workspaces.map((w) => (w === oldName ? newName : w));
+      setWorkspaces(nextWorkspaces);
+      localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
+      
+      if (activeWorkspace === oldName) {
+        handleSelectWorkspace(newName);
+      }
+      showToast(`Workspace "${oldName}" renamed to "${newName}".`, "success");
+    } catch (err: any) {
+      showToast(`Failed to rename workspace: ${err.message}`, "error");
+    }
+  };
+
+  const handleDeleteWorkspace = async (workspaceId: string) => {
+    try {
+      await api.deleteWorkspace(workspaceId);
+      
+      const nextWorkspaces = workspaces.filter((w) => w !== workspaceId);
+      setWorkspaces(nextWorkspaces);
+      localStorage.setItem('workspaces', JSON.stringify(nextWorkspaces));
+      
+      if (activeWorkspace === workspaceId) {
+        handleSelectWorkspace(nextWorkspaces[0] || 'Workspace 1');
+      }
+      showToast(`Workspace "${workspaceId}" deleted.`, "success");
+    } catch (err: any) {
+      showToast(`Failed to delete workspace: ${err.message}`, "error");
+    }
+  };
 
   // Selection states
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null);
@@ -403,7 +522,7 @@ export default function App() {
       if (isUnmounted) return;
 
       console.log('Connecting to CSV Linkage WebSocket...');
-      ws = new WebSocket(WS_URL);
+      ws = new WebSocket(`${WS_URL}?workspace_id=${encodeURIComponent(activeWorkspace)}`);
       wsRef.current = ws;
 
       ws.onopen = () => {
@@ -420,6 +539,46 @@ export default function App() {
         try {
           const payload = JSON.parse(event.data);
           const { event_type, data } = payload;
+
+          // Global presence/workspace events (processed regardless of workspace filtering)
+          if (event_type === 'presence_stats') {
+            setGlobalUserCount(data.global_count || 1);
+            setWorkspaceUserCounts(data.workspace_counts || {});
+            return;
+          }
+
+          if (event_type === 'workspace_renamed') {
+            const { old_name, new_name } = data;
+            setWorkspaces((prev) => {
+              const next = prev.map((w) => (w === old_name ? new_name : w));
+              localStorage.setItem('workspaces', JSON.stringify(next));
+              return next;
+            });
+            if (activeWorkspaceRef.current === old_name) {
+              handleSelectWorkspace(new_name);
+            }
+            showToast(`Workspace "${old_name}" was renamed to "${new_name}" by another user.`, "info");
+            return;
+          }
+
+          if (event_type === 'workspace_deleted') {
+            const { workspace_id } = data;
+            setWorkspaces((prev) => {
+              const next = prev.filter((w) => w !== workspace_id);
+              localStorage.setItem('workspaces', JSON.stringify(next));
+              return next;
+            });
+            if (activeWorkspaceRef.current === workspace_id) {
+              handleSelectWorkspace('Workspace 1');
+            }
+            showToast(`Workspace "${workspace_id}" was deleted by another user.`, "info");
+            return;
+          }
+
+          // Scope workspace events to active workspace
+          if (data && data.workspace_id && data.workspace_id !== activeWorkspaceRef.current) {
+            return;
+          }
 
           // Handle Figma-style collaborative cursor updates
           if (event_type === 'cursor_move') {
@@ -588,7 +747,7 @@ export default function App() {
       }
       clearInterval(interval);
     };
-  }, []);
+  }, [activeWorkspace]);
 
   // Sync cursor coordinates on mousemove
   const handleMouseMove = (e: React.MouseEvent) => {
@@ -612,6 +771,7 @@ export default function App() {
           color: USER_COLOR,
           canvasX,
           canvasY,
+          workspace_id: activeWorkspaceRef.current,
         },
       })
     );
@@ -1490,6 +1650,7 @@ export default function App() {
             clientId: CLIENT_ID,
             nodeId: node.id,
             position: node.position,
+            workspace_id: activeWorkspaceRef.current,
           },
         })
       );
@@ -2097,6 +2258,12 @@ export default function App() {
               setPreviewData(data);
               setIsPreviewOpen(true);
             }}
+            activeWorkspace={activeWorkspace}
+            workspaces={workspaces}
+            onSelectWorkspace={handleSelectWorkspace}
+            onAddWorkspace={handleAddWorkspace}
+            onRenameWorkspace={handleRenameWorkspace}
+            onDeleteWorkspace={handleDeleteWorkspace}
             comments={comments}
             isCommentMode={isCommentMode}
             onToggleCommentMode={() => {
@@ -2128,7 +2295,8 @@ export default function App() {
         <CanvasHeader
           backendStatus={backendStatus}
           wsConnected={wsConnected}
-          activeUsersCount={Object.keys(otherCursors).length + 1}
+          activeUsersCount={workspaceUserCounts[activeWorkspace] || Object.keys(otherCursors).length + 1}
+          globalUsersCount={globalUserCount}
         />
 
         {/* Canvas Area */}
