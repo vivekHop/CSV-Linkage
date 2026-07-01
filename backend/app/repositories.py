@@ -702,7 +702,41 @@ class RelationshipRepository(BaseRepository):
         src_label = resolve_node_label(source_node_type, source_node_id)
         dst_label = resolve_node_label(destination_node_type, destination_node_id)
         details = f"Created {relationship_type} lineage: {src_label} → {dst_label}"
-        self.log_activity(workspace_id, "relationship_created", details, None, commit=False)
+        
+        # Resolve destination asset
+        dest_asset = None
+        if destination_node_type == "column":
+            dest_col = self.db.query(ColumnModel).filter(ColumnModel.id == destination_node_id).first()
+            if dest_col:
+                dest_asset = dest_col.asset
+        elif destination_node_type == "asset":
+            dest_asset = self.db.query(Asset).filter(Asset.id == destination_node_id).first()
+
+        # Update VersionHistory of the destination table (asset)
+        if dest_asset:
+            dest_asset.version += 1
+            dest_asset.updated_at = datetime.utcnow()
+            self.db.flush()
+
+            diff_changes = [{
+                "field": "Lineage Link",
+                "old": "(none)",
+                "new": f"Created {relationship_type} link from {src_label}"
+            }]
+
+            db_version = VersionHistory(
+                asset_id=dest_asset.id,
+                version_number=dest_asset.version,
+                change_summary=f"Lineage Link Created: {src_label} → {dst_label}",
+                metadata_snapshot={
+                    "version": dest_asset.version,
+                    "is_diff": True,
+                    "changes": diff_changes
+                }
+            )
+            self.db.add(db_version)
+
+        self.log_activity(workspace_id, "relationship_created", details, dest_asset.id if dest_asset else None, commit=False)
 
         if commit:
             self.db.commit()
@@ -727,19 +761,116 @@ class RelationshipRepository(BaseRepository):
         if not db_rel:
             return None
             
+        old_rel_type = db_rel.relationship_type
+        old_metadata = dict(db_rel.metadata_json or {})
+        old_formula = old_metadata.get("formula", "")
+
         for key, value in updates.items():
             if key == "metadata_json" and isinstance(value, dict):
                 db_rel.metadata_json = {**(db_rel.metadata_json or {}), **value}
             elif hasattr(db_rel, key):
                 setattr(db_rel, key, value)
                 
+        # Clean up formula if relationship_type is no longer DERIVES_FROM
+        if db_rel.relationship_type != "DERIVES_FROM":
+            meta = dict(db_rel.metadata_json or {})
+            if "formula" in meta:
+                meta.pop("formula", None)
+                db_rel.metadata_json = meta
+            
+            # Clean up destination column custom attributes if no other derives lineage exists
+            if db_rel.destination_node_type == "column":
+                other_derives = self.db.query(RelationshipModel).filter(
+                    RelationshipModel.destination_node_type == "column",
+                    RelationshipModel.destination_node_id == db_rel.destination_node_id,
+                    RelationshipModel.relationship_type == "DERIVES_FROM",
+                    RelationshipModel.id != db_rel.id
+                ).first()
+                if not other_derives:
+                    dest_col = self.db.query(ColumnModel).filter(ColumnModel.id == db_rel.destination_node_id).first()
+                    if dest_col and dest_col.custom_attributes:
+                        col_attrs = dict(dest_col.custom_attributes)
+                        if "formula" in col_attrs:
+                            col_attrs.pop("formula", None)
+                            dest_col.custom_attributes = col_attrs
+
         db_rel.updated_at = datetime.utcnow()
+        self.db.flush()
+
+        # Capture updates for logs/history
+        new_rel_type = db_rel.relationship_type
+        new_metadata = dict(db_rel.metadata_json or {})
+        new_formula = new_metadata.get("formula", "")
+
+        type_changed = (old_rel_type != new_rel_type)
+        formula_changed = (old_formula != new_formula)
+
+        if type_changed or formula_changed:
+            # Resolve destination asset
+            dest_asset = None
+            if db_rel.destination_node_type == "column":
+                dest_col = self.db.query(ColumnModel).filter(ColumnModel.id == db_rel.destination_node_id).first()
+                if dest_col:
+                    dest_asset = dest_col.asset
+            elif db_rel.destination_node_type == "asset":
+                dest_asset = self.db.query(Asset).filter(Asset.id == db_rel.destination_node_id).first()
+
+            # Resolve labels
+            def resolve_node_label(node_type: str, node_id: str) -> str:
+                if node_type == "asset":
+                    a = self.db.query(Asset).filter(Asset.id == node_id).first()
+                    return f"Table '{a.name}'" if a else f"Table [{node_id[:8]}]"
+                else:
+                    col = self.db.query(ColumnModel).filter(ColumnModel.id == node_id).first()
+                    if col:
+                        asset = self.db.query(Asset).filter(Asset.id == col.asset_id).first()
+                        return f"'{asset.name}.{col.name}'" if asset else f"Column '{col.name}'"
+                    return f"Column [{node_id[:8]}]"
+
+            src_label = resolve_node_label(db_rel.source_node_type, db_rel.source_node_id)
+            dst_label = resolve_node_label(db_rel.destination_node_type, db_rel.destination_node_id)
+
+            diff_parts = []
+            diff_changes = []
+            if type_changed:
+                diff_parts.append(f"Type: {old_rel_type or '(none)'} → {new_rel_type or '(none)'}")
+                diff_changes.append({
+                    "field": f"Lineage '{src_label} → {dst_label}' type",
+                    "old": str(old_rel_type or ""),
+                    "new": str(new_rel_type or "")
+                })
+            if formula_changed:
+                diff_parts.append(f"Formula: \"{old_formula or '(none)'}\" → \"{new_formula or '(none)'}\"")
+                diff_changes.append({
+                    "field": f"Lineage '{src_label} → {dst_label}' formula",
+                    "old": str(old_formula or ""),
+                    "new": str(new_formula or "")
+                })
+
+            details = f"Updated lineage '{src_label} → {dst_label}': " + "; ".join(diff_parts)
+            self.log_activity(db_rel.workspace_id, "relationship_updated", details, dest_asset.id if dest_asset else None, commit=False)
+
+            if dest_asset and diff_changes:
+                dest_asset.version += 1
+                dest_asset.updated_at = datetime.utcnow()
+                self.db.flush()
+
+                db_version = VersionHistory(
+                    asset_id=dest_asset.id,
+                    version_number=dest_asset.version,
+                    change_summary=f"Lineage update: {', '.join([c['field'] for c in diff_changes])}",
+                    metadata_snapshot={
+                        "version": dest_asset.version,
+                        "is_diff": True,
+                        "changes": diff_changes
+                    }
+                )
+                self.db.add(db_version)
+
         if commit:
             self.db.commit()
             self.db.refresh(db_rel)
-        else:
-            self.db.flush()
-        
+
         # Broadcast via WebSockets
         self._trigger_broadcast("relationship_updated", {
             "workspace_id": db_rel.workspace_id,
@@ -786,9 +917,42 @@ class RelationshipRepository(BaseRepository):
         self.db.delete(db_rel)
         self.db.flush()
 
+        # Resolve destination asset
+        dest_asset = None
+        if dest_type == "column":
+            dest_col = self.db.query(ColumnModel).filter(ColumnModel.id == dest_id).first()
+            if dest_col:
+                dest_asset = dest_col.asset
+        elif dest_type == "asset":
+            dest_asset = self.db.query(Asset).filter(Asset.id == dest_id).first()
+
+        # Update VersionHistory of the destination table (asset)
+        if dest_asset:
+            dest_asset.version += 1
+            dest_asset.updated_at = datetime.utcnow()
+            self.db.flush()
+
+            diff_changes = [{
+                "field": "Lineage Link",
+                "old": f"{rel_type} link from {src_label}",
+                "new": "(deleted)"
+            }]
+
+            db_version = VersionHistory(
+                asset_id=dest_asset.id,
+                version_number=dest_asset.version,
+                change_summary=f"Lineage Link Deleted: {src_label} → {dst_label}",
+                metadata_snapshot={
+                    "version": dest_asset.version,
+                    "is_diff": True,
+                    "changes": diff_changes
+                }
+            )
+            self.db.add(db_version)
+
         # Log Activity with human-readable names
         details = f"Removed {rel_type} lineage: {src_label} → {dst_label}"
-        self.log_activity(workspace_id, "relationship_deleted", details, None, commit=False)
+        self.log_activity(workspace_id, "relationship_deleted", details, dest_asset.id if dest_asset else None, commit=False)
 
         if commit:
             self.db.commit()

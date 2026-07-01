@@ -2273,10 +2273,31 @@ export default function App() {
       )
     );
 
-    // If formula is updated in relationship metadata, propagate to destination column formula
-    if (updates.metadata_json && 'formula' in updates.metadata_json && rel && rel.destination_node_type === 'column') {
-      const newFormula = updates.metadata_json.formula || '';
+    // Propagate formula updates or clear formula if type changes away from DERIVES_FROM
+    if (rel && rel.destination_node_type === 'column') {
+      const isDerives = (updates.relationship_type === 'DERIVES_FROM') || 
+                        (updates.relationship_type === undefined && rel.relationship_type === 'DERIVES_FROM');
       
+      let newFormula = '';
+      if (isDerives) {
+        newFormula = (updates.metadata_json && 'formula' in updates.metadata_json)
+          ? (updates.metadata_json.formula || '')
+          : (rel.metadata_json?.formula || '');
+      } else {
+        // If type changed away from DERIVES_FROM, check if there are other DERIVES_FROM relationships to the same column
+        const otherDerives = relationships.some(
+          r => r.id !== rel.id &&
+               r.destination_node_type === 'column' &&
+               r.destination_node_id === rel.destination_node_id &&
+               r.relationship_type === 'DERIVES_FROM'
+        );
+        if (!otherDerives) {
+          newFormula = '';
+        } else {
+          newFormula = rel.metadata_json?.formula || '';
+        }
+      }
+
       setAssets((prev) =>
         prev.map((asset) => {
           if (asset.columns?.some((c) => c.id === rel.destination_node_id)) {
@@ -2284,12 +2305,15 @@ export default function App() {
               ...asset,
               columns: asset.columns.map((col) => {
                 if (col.id === rel.destination_node_id) {
+                  const attrs = { ...(col.custom_attributes || {}) };
+                  if (newFormula) {
+                    attrs.formula = newFormula;
+                  } else {
+                    delete attrs.formula;
+                  }
                   return {
                     ...col,
-                    custom_attributes: {
-                      ...(col.custom_attributes || {}),
-                      formula: newFormula
-                    }
+                    custom_attributes: attrs
                   };
                 }
                 return col;
@@ -2303,11 +2327,14 @@ export default function App() {
       // Update column formula in the background
       const existingCol = originalAssets.flatMap(a => a.columns || []).find(c => c.id === rel.destination_node_id);
       if (existingCol) {
+        const nextAttrs = { ...(existingCol.custom_attributes || {}) };
+        if (newFormula) {
+          nextAttrs.formula = newFormula;
+        } else {
+          delete nextAttrs.formula;
+        }
         api.updateColumn(rel.destination_node_id, {
-          custom_attributes: {
-            ...(existingCol.custom_attributes || {}),
-            formula: newFormula
-          }
+          custom_attributes: nextAttrs
         }).catch(console.error);
       }
     }
