@@ -2,6 +2,25 @@ import React, { useState } from 'react';
 import { Network, History, Trash2, ArrowRight, Clock, Database, Columns, PlusCircle, AlertCircle, RefreshCw } from 'lucide-react';
 import type { Asset, Relationship, ActivityLog } from '../types';
 
+// IST date+time formatter (India Standard Time, UTC+5:30)
+const fmtIST = (isoStr: string | null | undefined): string => {
+  if (!isoStr) return 'N/A';
+  try {
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(new Date(isoStr));
+  } catch {
+    return isoStr;
+  }
+};
+
 interface BottomPanelProps {
   assets: Asset[];
   relationships: Relationship[];
@@ -231,13 +250,7 @@ export const BottomPanel: React.FC<BottomPanelProps> = ({
                   </thead>
                   <tbody className="divide-y divide-workspace-750/30">
                     {activities.map((act) => {
-                      const dateStr = new Date(act.created_at).toLocaleString([], {
-                        month: 'short',
-                        day: 'numeric',
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit',
-                      });
+                      const dateStr = fmtIST(act.created_at);
                       
                       const getActionBadge = (type: string) => {
                         let baseStyle = "px-2 py-0.5 rounded text-[9px] font-mono font-bold uppercase tracking-wider ";

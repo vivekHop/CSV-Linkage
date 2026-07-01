@@ -279,11 +279,16 @@ class AssetRepository(BaseRepository):
         if not db_asset:
             return None
 
-        old_snapshot = create_asset_snapshot(db_asset)
-
         # Filter to only the metadata fields we care about tracking
         TRACKED_FIELDS = {"name", "description", "owner", "notes", "tags", "custom_attributes"}
         metadata_updates = {k: v for k, v in updates.items() if k in TRACKED_FIELDS}
+
+        # Capture old values BEFORE mutation (setattr changes the ORM object in-place,
+        # so reading after setattr gives the new value for both old and new snapshots).
+        import copy
+        old_values: Dict[str, Any] = {
+            f: copy.deepcopy(getattr(db_asset, f, None)) for f in TRACKED_FIELDS
+        }
 
         # Update fields
         for key, value in updates.items():
@@ -293,11 +298,43 @@ class AssetRepository(BaseRepository):
         db_asset.updated_at = datetime.utcnow()
         self.db.flush()
 
-        new_snapshot = create_asset_snapshot(db_asset)
-
-        # Only create version history and activity log if metadata fields actually changed
+        # Compute diff from captured old values vs freshly-set new values
         if metadata_updates:
-            diff_changes = compute_snapshot_diff(old_snapshot, new_snapshot)
+            diff_changes = []
+            for field in TRACKED_FIELDS:
+                old_val = old_values.get(field)
+                new_val = getattr(db_asset, field, None)
+
+                # Normalize for comparison
+                if field == "tags":
+                    old_cmp = sorted(old_val or [])
+                    new_cmp = sorted(new_val or [])
+                elif field == "custom_attributes":
+                    # Skip position changes — only track business attribute changes
+                    old_biz = {k: v for k, v in (old_val or {}).items() if k != "position"}
+                    new_biz = {k: v for k, v in (new_val or {}).items() if k != "position"}
+                    old_cmp = old_biz
+                    new_cmp = new_biz
+                else:
+                    old_cmp = old_val or ""
+                    new_cmp = new_val or ""
+
+                if old_cmp != new_cmp:
+                    if field == "tags":
+                        old_display = ", ".join(old_val or [])
+                        new_display = ", ".join(new_val or [])
+                    elif field == "custom_attributes":
+                        old_display = str(old_biz)
+                        new_display = str(new_biz)
+                    else:
+                        old_display = str(old_val or "")
+                        new_display = str(new_val or "")
+
+                    diff_changes.append({
+                        "field": f"Asset {field}",
+                        "old": old_display,
+                        "new": new_display
+                    })
 
             if diff_changes:
                 # Increment version only when there's a real change

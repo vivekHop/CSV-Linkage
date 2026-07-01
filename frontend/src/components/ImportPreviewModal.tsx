@@ -7,6 +7,19 @@ import { api } from '../api';
 import type { ImportDraft } from '../types';
 import { useCustomDialog } from './CustomDialog';
 
+// IST date+time formatter
+const fmtIST = (isoStr: string | null | undefined): string => {
+  if (!isoStr) return 'N/A';
+  try {
+    return new Intl.DateTimeFormat('en-IN', {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    }).format(new Date(isoStr));
+  } catch { return isoStr; }
+};
+
 interface ImportPreviewModalProps {
   isOpen: boolean;
   onClose: (savedDraft?: boolean) => void;
@@ -481,7 +494,7 @@ export const ImportPreviewModal: React.FC<ImportPreviewModalProps> = ({
                       <div className="min-w-0 flex-1 pr-2">
                         <p className="text-xs font-semibold text-white truncate">{draft.name}</p>
                         <p className="text-[10px] text-workspace-400">
-                          {new Date(draft.created_at).toLocaleString()}
+                          {fmtIST(draft.created_at)}
                         </p>
                       </div>
                       <button

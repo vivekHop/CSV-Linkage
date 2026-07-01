@@ -1,8 +1,28 @@
 import React, { useState, useEffect } from 'react';
-import { FileSpreadsheet, Columns, User, Calendar, Plus, Trash2, Eye, Tag, FileClock, CheckCircle, Database, Loader2, AlertCircle } from 'lucide-react';
+import { FileSpreadsheet, Columns, User, Calendar, Plus, Trash2, Eye, Tag, FileClock, CheckCircle, Database, Loader2, AlertCircle, Clock } from 'lucide-react';
 import { api } from '../api';
 import type { Asset, Column, VersionHistory, Relationship } from '../types';
 import { useCustomDialog } from './CustomDialog';
+
+// ─── IST date formatter (India Standard Time, UTC+5:30) ───────────────────────
+const fmtIST = (isoStr: string | null | undefined, opts?: Intl.DateTimeFormatOptions): string => {
+  if (!isoStr) return 'N/A';
+  try {
+    const base: Intl.DateTimeFormatOptions = {
+      timeZone: 'Asia/Kolkata',
+      day: '2-digit',
+      month: 'short',
+      year: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    };
+    return new Intl.DateTimeFormat('en-IN', { ...base, ...opts }).format(new Date(isoStr));
+  } catch {
+    return isoStr;
+  }
+};
 
 interface RightSidebarProps {
   selectedAsset: Asset | null;
@@ -982,8 +1002,8 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   </div>
                   <div className="flex justify-between">
                     <span className="text-workspace-600">Uploaded At:</span>
-                    <span className="text-workspace-200 truncate max-w-[120px]" title={selectedAsset.created_at}>
-                      {new Date(selectedAsset.created_at).toLocaleDateString()}
+                    <span className="text-workspace-200 truncate max-w-[140px]" title={selectedAsset.created_at}>
+                      {fmtIST(selectedAsset.created_at)}
                     </span>
                   </div>
                 </div>
@@ -1129,29 +1149,36 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({
                   <p className="text-[10px] text-workspace-600 font-mono">No historical edits found.</p>
                 ) : (
                   <div className="space-y-2 max-h-[480px] overflow-y-auto">
-                    {versions.map((ver) => (
-                      <div
-                        key={ver.id}
-                        className="p-3 bg-workspace-900 border border-workspace-750 hover:border-workspace-600 rounded-lg flex flex-col space-y-1.5 transition-all"
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-brand-teal font-mono">Version v{ver.version_number}</span>
-                          <span className="text-[9px] text-workspace-600 font-mono">
-                            {new Date(ver.created_at).toLocaleDateString()}
-                          </span>
-                        </div>
-                        <p className="text-[10px] text-workspace-200">
-                          {ver.change_summary || 'Metadata edit'}
-                        </p>
-                        <button
-                          onClick={() => setSelectedVersionSnapshot(ver.metadata_snapshot)}
-                          className="self-end text-[9px] text-brand-teal hover:underline flex items-center space-x-1 mt-1"
+                    {versions.map((ver) => {
+                      const istDate = fmtIST(ver.created_at, { day: '2-digit', month: 'short', year: 'numeric', hour12: false });
+                      const istTime = fmtIST(ver.created_at, { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+                      return (
+                        <div
+                          key={ver.id}
+                          className="p-3 bg-workspace-900 border border-workspace-750 hover:border-workspace-600 rounded-lg flex flex-col space-y-1.5 transition-all"
                         >
-                          <Eye size={10} />
-                          <span>View snapshot</span>
-                        </button>
-                      </div>
-                    ))}
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-brand-teal font-mono">Version v{ver.version_number}</span>
+                            <div className="flex flex-col items-end gap-0.5">
+                              <span className="text-[9px] text-workspace-500 font-mono">{istDate}</span>
+                              <span className="flex items-center gap-1 text-[9px] text-workspace-600 font-mono">
+                                <Clock size={8} />{istTime} IST
+                              </span>
+                            </div>
+                          </div>
+                          <p className="text-[10px] text-workspace-200">
+                            {ver.change_summary || 'Metadata edit'}
+                          </p>
+                          <button
+                            onClick={() => setSelectedVersionSnapshot(ver.metadata_snapshot)}
+                            className="self-end text-[9px] text-brand-teal hover:underline flex items-center space-x-1 mt-1"
+                          >
+                            <Eye size={10} />
+                            <span>View changes</span>
+                          </button>
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>
